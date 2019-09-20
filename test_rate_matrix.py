@@ -40,10 +40,12 @@ sigma_k = 2. # std dev of rate matrix elements
 tau = 0.002 # lag time for estimation of transition matrix
 tau_C = 0.002 # lag time for estimatation of coarse transition matrix
 k = 10 # no. of eigenvectors of the (full) transition matrix to calculate
-n_it_var = 1000 # no. of steps in variational optimisation of second eigenvalue
+n_it_var = 1200 # no. of steps in variational optimisation of second eigenvalue
 # Erdos-Renyi random graph model:
 # as p*n_V -> c > 1, then the graph will almost surely have a single large connected
 # component of order n_V (percolation transition threshold exceeded)
+
+print "\nlag time: ", tau, "\tno. of vertices", n_V, "\tno. of communities", n_C
 
 np.random.seed(seed)
 # equal no. of vertices in each community
@@ -80,20 +82,21 @@ for i in range(n_V):
 # transition rate matrix that corresponds to eigenvalue = 0
 # the transition rate matrix has a unique zero eigenvalue. The corresponding (normalised) eigenvector is the
 # stationary probability (pi). All other eigenvalues are < 0.
-K_eval, K_evec = eigs(K,1,which="SM")
-pi = np.array(K_evec*(1./np.sum(K_evec[:,0])),dtype=float)
-print "K_eval:\n", K_eval
-# print "pi:\n", pi
+K_evals, K_evecs = eigs(K,k,which="SM")
+pi = np.array(K_evecs[:,0]*(1./np.sum(K_evecs[:,0])),dtype=float)
+# print "stationary distribution pi:\n", pi
 assert abs(np.sum(pi)-1.) < 1.0E-10, "Error, node stationary probabilities do not sum to 1"
 
 balance = True
 for i in range(n_V):
     for j in range(i+1,n_V):
         if abs((K[i,j]*pi[i])-K[j,i]*pi[j]) < 1.0E-10:
-            print "Detailed balance is not satisfied"
+            print "Detailed balance is NOT satisfied"
             balance = False
             break
     if not balance: break
+if balance:
+    print "Detailed balance IS satisfied"
 
 # calculate k eigenvectors and eigenvalues of transition matrix by the Lanczos algorithm (a power method)
 T_evals, T_evecs = eigs(T,k)
@@ -108,6 +111,9 @@ char_t_full = get_timescales(T_evals,tau)
 with open("evals.dat","w") as eval_f:
     for T_eval in T_evals:
         eval_f.write("%1.14f\n" % T_eval)
+with open("evals_K.dat","w") as eval_K_f:
+    for K_eval in K_evals:
+        eval_K_f.write("%1.14f\n" % K_eval)
 with open("char_times.dat","w") as ct_f:
     for t in char_t_full:
         ct_f.write("%1.14f\n" % t)
@@ -124,11 +130,11 @@ for i in range(k):
 # transition rate matrix is not optimal
 #'''
 c_idx = []
-c_idx.extend([0]*110)
-c_idx.extend([1]*90)
-c_idx.extend([2]*120)
-c_idx.extend([3]*90)
-c_idx.extend([4]*90)
+c_idx.extend([0]*130)
+c_idx.extend([1]*80)
+c_idx.extend([2]*125)
+c_idx.extend([3]*85)
+c_idx.extend([4]*80)
 #'''
 
 # construct a coarse-grained transition rate matrix, estimated from rate constants for inter-community
@@ -143,40 +149,52 @@ for i in range(n_V):
         K_C[c_idx[i],c_idx[j]] += (pi[i]/pi_C[c_idx[i]])*K[i,j]
 for i in range(n_C):
     K_C[i,i] = -np.sum(K_C[i,:])
-print "coarse-grained transition rate matrix K_C:\n", K_C
+print "\ninitial coarse-grained transition rate matrix K_C:\n", K_C
+K_C_evals, K_C_evecs = np.linalg.eig(K_C)
 
 # calculate and process coarse-grained transition matrix
 T_C = expm(tau_C*K_C)
-print "T_C:\n", T_C
+print "initial coarse-grained transition matrix T_C:\n", T_C
 for i in range(n_C):
     assert abs(np.sum(T_C[i,:])-1.) < 1.0E-08, "Error, row %i of coarse transition matrix does not sum to 1" % i
+print "initial stationary distribution vector pi:\n", pi_C
 # NB coarse matrix is small enough to calculate all eigenvectors, so not using power method here
 T_C_evals, T_C_evecs = np.linalg.eig(T_C)
 T_C_evecs = np.transpose(T_C_evecs)
 T_C_evecs = np.array([T_C_evec for _,T_C_evec in sorted(zip(list(T_C_evals),list(T_C_evecs)),key=lambda pair: pair[0])])
 T_C_evals = np.array(sorted(list(T_C_evals),reverse=True),dtype=float)
 char_t_C = get_timescales(T_C_evals,tau_C)
-# write files for the estimated transition matrix
+# write files for the estimated (initial) transition and transition rate matrices
 with open("evals.est.dat","w") as eval_f:
     for T_C_eval in T_C_evals:
         eval_f.write("%1.14f\n" % T_C_eval)
 with open("char_times.est.dat","w") as ct_f:
     for t in char_t_C:
         ct_f.write("%1.14f\n" % t)
+with open("evals_K.est.dat","w") as eval_K_f:
+    for K_C_eval in K_C_evals:
+        eval_K_f.write("%1.14f\n" % K_C_eval)
 
 # variationally optimise the second eigenvalue by perturbing the definition of the sets (communities)
 n_change = 1 # no. of edges to change at a time
 K_C_var = deepcopy(K_C)
+T_C_var = deepcopy(T_C)
 pi_C_var = deepcopy(pi_C)
 c_idx_var = deepcopy(c_idx)
+K_C_var_evals = deepcopy(K_C_evals)
 T_C_var_evals = deepcopy(T_C_evals)
 char_t_C_var = deepcopy(char_t_C)
 n_it = 0
 n_success = 0
 T_C_eval2_curr = T_C_evals[1]
+eval_K_prog_f = open("eval_K_prog.dat","w+")
+eval_T_prog_f = open("eval_T_prog.dat","w+")
+print "\n\nBeginning variational optimisation of second dominant eigenvalue of transition matrix...\n"
 while n_it < n_it_var:
     K_C_var_old = deepcopy(K_C_var)
+    T_C_var_old = deepcopy(T_C_var)
     pi_C_var_old = deepcopy(pi_C_var)
+    K_C_var_evals_old = deepcopy(K_C_var_evals)
     T_C_var_evals_old = deepcopy(T_C_var_evals)
     char_t_C_var_old = deepcopy(char_t_C_var)
     c_idx_var_old = deepcopy(c_idx_var)
@@ -230,6 +248,9 @@ while n_it < n_it_var:
     for i in range(n_C):
         assert abs(np.sum(T_C_var[i,:])-1.) < 1.0E-08, "row %i of T_C_var does not sum to one" % i
     T_C_var_evals, T_C_var_evecs = np.linalg.eig(T_C_var)
+    T_C_var_evals = sorted(T_C_var_evals,reverse=True)
+    K_C_var_evals, K_C_var_evecs = np.linalg.eig(K_C_var)
+    K_C_var_evals = sorted(K_C_var_evals,reverse=True)
     T_C_var_evals = np.array(sorted(list(T_C_var_evals),reverse=True),dtype=float)
     char_t_C_var = get_timescales(T_C_var_evals,tau_C)
     char_t_amt_impv = np.sum(np.array([char_t_C_var[i] - char_t_C_var_old[i] for i in range(1,n_C)]))
@@ -239,18 +260,31 @@ while n_it < n_it_var:
 #    if evals_amt_impv < 0.: # net decrease in the eigenvalues of the coarse matrix, reject change
 #    if char_t_amt_impv < 0.: # net decrease in the characteristic timescales of the coarse matrix, reject change
         K_C_var = deepcopy(K_C_var_old)
+        T_C_var = deepcopy(T_C_var_old)
         pi_C_var = deepcopy(pi_C_var_old)
+        K_C_var_evals = deepcopy(K_C_var_evals_old)
         T_C_var_evals = deepcopy(T_C_var_evals_old)
         char_t_C_var = deepcopy(char_t_C_var_old)
         c_idx_var = deepcopy(c_idx_var_old)
-    else: # second eigenvalue has increased, accept change
-        print "accepting change:", T_C_var_evals[1], T_C_eval2_curr
+    else: # second eigenvalue of transition matrix has increased, accept change
+        print n_it, "\taccepting change:", T_C_var_evals[1], T_C_eval2_curr
         T_C_eval2_curr = T_C_var_evals[1]
         n_success += 1
+    # append the eigenvalues of the coarse transition and rate matrices to data files recording progress
+    eval_T_prog_f.write("%5i" % n_it)
+    for T_C_eval in T_C_var_evals:
+        eval_T_prog_f.write("   %1.6f" % T_C_eval)
+    eval_T_prog_f.write("\n")
+    eval_K_prog_f.write("%5i" % n_it)
+    for K_C_eval in K_C_var_evals:
+        eval_K_prog_f.write("   %1.6f" % K_C_eval)
+    eval_K_prog_f.write("\n")
     n_it += 1
-print "Number of successful community updates:", n_success
+eval_T_prog_f.close()
+eval_K_prog_f.close()
+print "\nNumber of successful community updates:", n_success
 print "Number of nodes in each community:"
-n_comm = [0.]*n_C
+n_comm = [0]*n_C
 for i in range(n_V): n_comm[c_idx_var[i]] += 1
 print n_comm
 
@@ -258,5 +292,13 @@ char_t_C_var = get_timescales(T_C_var_evals,tau_C)
 with open("char_times.var.dat","w") as ct_f:
     for t in char_t_C_var:
         ct_f.write("%1.14f\n" % t)
+with open("evals.var.dat","w") as eval_f:
+    for T_C_eval in T_C_var_evals:
+        eval_f.write("%1.14f\n" % T_C_eval)
+with open("evals_K.var.dat","w") as eval_K_f:
+    for K_C_eval in K_C_var_evals:
+        eval_K_f.write("%1.14f\n" % K_C_eval)
 
 print "K_C is now:\n", K_C_var
+print "\nT_C is now:\n", T_C_var
+print "\npi_C is now:\n", pi_C_var
