@@ -1,11 +1,16 @@
 '''
 Main Python script to estimate and analyse a coarse transition network
+Usage:
+python coarse_ktn_analysis.py <n_nodes> <n_edges> <n_comms>
+requires 4x input data files
 
 Daniel J. Sharpe
 Sep 2019
 '''
 
 import numpy as np
+from os.path import exists
+from sys import argv
 
 class Node(object):
 
@@ -58,7 +63,7 @@ class Node(object):
         update_edges = False
         if self.qf != None: update_edges = True
         self.qf, self.qb = vals[0], vals[1]
-        self.mr = self.calc_mr(self.qf,self.qb) # quack
+        self.mr = self.calc_mr(self) # quack
         if update_edges:
             pass
 
@@ -67,14 +72,18 @@ class Node(object):
         self.qf, self.qb, self.mr = None, None, None
 
     @staticmethod
-    def calc_mr(qf,qb):
-        pass
+    def calc_mr(node,dbalance=False):
+        if not Ktn.check_if_node(node): raise AttributeError
+        if not dbalance:
+            return node.pi*node.qf*node.qb
+        else:
+            return node.pi*node.qf*(1.-node.qf)
 
 class Edge(object):
 
     def __init__(self,edge_id,ts_id):
         self.edge_id = edge_id   # edge ID (NB is unique)
-        self.ts_id = ts_id       # transition state ID (NB edges are bidirectional)
+        self.ts_id = ts_id       # transition state ID (NB edges are bidirectional, shared TS ID)
         self.ts_en = None        # transition state energy
         self.k = None            # transition rate
         self.t = None            # transition probability
@@ -84,6 +93,7 @@ class Edge(object):
         self.deadts = False      # flag to indicate "dead" transition state
         self.to_node = None
         self.from_node = None
+        self.__rev_edge = None   # reverse edge, corresponding to from_node<-to_node
 
     def __repr__(self):
         return self.__class__.__name__+"("+str(self.edge_id)+","+str(self.ts_id)+")"
@@ -114,13 +124,14 @@ class Edge(object):
 
     @edge_attribs.setter
     def edge_attribs(self,vals):
-        self.ts_en, self.k, self.t = vals[0], vals[1], vals[2]
+        self.ts_en, self.k = vals[0], vals[1]
 
     @edge_attribs.deleter
     def edge_attribs(self):
         self.ts_en, self.k, self.t, self.j, self.f, self.fe = [None]*6
         self.deadts = True # flag the edge as having been the target of deletion
         del to_from_nodes
+        del __rev_edge
 
     @property
     def to_from_nodes(self):
@@ -150,35 +161,138 @@ class Edge(object):
 
     @property
     def flow_vals(self):
-        pass
+        return [self.j,self.f,self.fe]
+
+    @flow_vals.setter
+    def flow_vals(self):
+        if (self.to_node is None) or (self.from_node is None): raise AttributeError
+        # quack
+        dummy = Edge.calc_j
+        # for these, need to return none if committors of nodes not set
+        dummy = Edge.calc_f
+        dummy = Edge.calc_fe
+
+    @flow_vals.deleter
+    def flow_vals(self):
+        self.j, self.f, self.fe = None, None, None
 
     @staticmethod
-    def calc_j(node1,node2):
-        if not ((Edge.check_if_node(node1)) or (Edge.check_if_node(node2))): raise AttributeError
+    def calc_j(edge1,edge2):
+        if not ((Ktn.check_if_edge(edge1)) or (Ktn.check_if_edge(edge2))): raise AttributeError
+        if not Ktn.check_edge_reverse(edge1,edge2): raise AttributeError
+        if ((edge1.k is None) or (edge2.k is None)): raise AttributeError
+        j1 = (edge1.k*edge1.from_node.pi) - (edge2.k*edge2.from_node.pi)
+        j2 = -j1
+        return j1, j2
 
     @staticmethod
     def calc_f(node1,node2):
-        if not ((Edge.check_if_node(node1)) or (Edge.check_if_node(node2))): raise AttributeError
+        if not ((Ktn.check_if_node(node1)) or (Ktn.check_if_node(node2))): raise AttributeError
 
     @staticmethod
-    def calc_fe(node1,node2):
-        if not ((Edge.check_if_node(node1)) or (Edge.check_if_node(node2))): raise AttributeError
+    def calc_fe(edge1,edge2):
+        if not ((Ktn.check_if_edge(edge1)) or (Ktn.check_if_edge(edge2))): raise AttributeError
+        if not Ktn.check_edge_reverse(edge1,edge2): raise AttributeError
+        if ((edge1.f is None) or (edge2.f is None)): raise AttributeError
+        fe1 = max(0.,edge1.f-edge2.f)
+        fe2 = max(0.,edge2.f-edge1.f)
+        return fe1, fe2
+
+    @property
+    def rev_edge(self):
+        return self.rev_edge
+
+    @rev_edge.setter
+    def rev_edge(self,edge):
+        if not Ktn.check_if_edge(edge): raise AttributeError
+        self.__rev_edge = edge
+
+class Ktn(object):
+
+    def __init__(self,n_nodes,n_edges,n_comms):
+        self.n_nodes = n_nodes    # number of nodes
+        self.n_edges = n_edges    # number of bidirectional edges
+        self.n_comms = n_comms    # number of communities into which nodes are partitioned
+        self.nodelist = [Node(i) for i in range(self.n_nodes)]
+        self.edgelist = [Edge(i,i) for i in range(2*self.n_edges)]
+        self.dbalance = False     # flag to indicate if detailed balance holds
+        self.A = set()            # endpoint nodes in the set A (NB A<-B)
+        self.B = set()            # endpoint nodes in the set B
+
+    def construct_ktn(self,comms,conns,pi,k,node_ens,ts_ens):
+        if ((len(node_ens)!=self.n_nodes) or (len(ts_ens)!=self.n_edges) or (len(comms)!=self.n_nodes) \
+            or (len(conns)!=self.n_edges) or (len(pi)!=self.n_nodes) \
+            or (len(k)!=2*self.n_edges)): raise AttributeError
+        for i in range(self.n_nodes):
+            if comms[i] > self.n_comms-1: raise AttributeError
+            self.nodelist[i].node_attribs = [node_ens[i],comms[i],pi[i]]
+        for i in range(self.n_edges):
+            self.edgelist[2*i].edge_attribs = [ts_ens[i],k[2*i]]
+            self.edgelist[(2*i)+1].edge_attribs = [ts_ens[i],k[(2*i)+1]]
+            # set edge connectivity
+            self.edgelist[2*i].to_from_nodes = [self.nodelist[conns[i][0]-1],self.nodelist[conns[i][1]-1]]
+            self.edgelist[(2*i)+1].to_from_nodes = [self.nodelist[conns[i][1]-1],self.nodelist[conns[i][0]-1]]
+
+    ''' read (at least) node connectivity, stationary distribution and transition rates from files '''
+    @staticmethod
+    def read_ktn_info(n_nodes,n_edges):
+        comms = Ktn.read_single_col("communities.dat",n_nodes)
+        conns = Ktn.read_double_col("ts_conns.dat",n_edges)
+        pi = Ktn.read_single_col("stat_prob.dat",n_nodes,fmt="float")
+        k = Ktn.read_single_col("ts_weights.dat",2*n_edges,fmt="float")
+        node_ens = Ktn.read_single_col("node_ens.dat",n_nodes,fmt="float") # optional
+        ts_ens = Ktn.read_single_col("ts_ens.dat",n_edges,fmt="float") # optional
+        return comms, conns, pi, k, node_ens, ts_ens
+
+    ''' write the network to files in a format readable by Gephi '''
+    def print_gephi_fmt(self,fmt=".gephi"):
+        pass
+
+    @staticmethod
+    def read_single_col(fname,n_lines,fmt="int"):
+        fmtfunc = int
+        if fmt=="float": fmtfunc = float
+        if not exists(fname): return [None]*n_lines
+        with open(fname) as datafile:
+            data = [fmtfunc(next(datafile)) for i in xrange(n_lines)]
+        return data
+
+    @staticmethod
+    def read_double_col(fname,n_lines,fmt="int"):
+        fmtfunc = int
+        if fmt=="float": fmtfunc = float
+        if not exists(fname): return [None]*n_lines
+        data = [None]*n_lines
+        with open(fname) as datafile:
+            for i in xrange(n_lines):
+                line = next(datafile).split()
+                data[i] = [fmtfunc(line[0]),fmtfunc(line[1])]
+        return data
 
     @staticmethod
     def check_if_node(node):
         return node.__class__.__name__=="Node"
 
-class Ktn(object):
+    @staticmethod
+    def check_if_edge(edge):
+        return edge.__class__.__name__=="Edge"
 
-    def __init__(self,n_nodes,n_edges):
-        self.n_nodes = n_nodes    # number of nodes
-        self.nodelist = [Node(i) for i in range(self.n_nodes)]
-        self.edgelist = [Edge(i,i) for i in range(self.n_edges)]
-        self.dbalance = False     # flag to indicate if detailed balance holds
+    ''' check that edges are the "reverse" of one another, i<-j and j<-i '''
+    @staticmethod
+    def check_edge_reverse(edge1,edge2):
+        if ((edge1.to_node is None) or (edge2.to_node is None)): raise AttributeError
+        return ((edge1.to_node==edge2.from_node) and (edge2.to_node==edge1.from_node))
 
-    ''' write the network to files in a format readable by Gephi '''
-    def print_gephi_fmt(self):
-        pass
+    def renormalise_mr(self):
+        self.Zm = 0 # prob that a trajectory is reactive at a given instance in time
+        for i in range(self.n_nodes):
+            self.Zm += self.nodelist[i].mr
+        for i in range(self.n_nodes):
+            self.nodelist[i].mr *= 1./self.Zm
+
+class Coarse_ktn(Ktn):
+
+    pass
 
 class Analyse_coarse_ktn(object):
 
@@ -186,14 +300,26 @@ class Analyse_coarse_ktn(object):
         pass
 
     ''' set up the transition rate matrix '''
-    def setup_k_mtx():
+    def setup_k_mtx(self,ktn):
         pass
 
+    ''' set up the sparse transition rate matrix '''
+    def setup_sp_k_mtx(self,ktn):
+        pass
+
+    ''' calculate the transition matrix by matrix exponential '''
     def calc_t(self,tau):
+        pass
+
+    ''' function to perform variational optimisation of the second dominant eigenvalue of
+        the transition rate (and therefore of the transition) matrix, by perturbing the
+        assigned communities and using a simulated annealing procedure '''
+    def varopt_simann(self):
         pass
 
 if __name__=="__main__":
 
+    ### TESTS ###
     mynode1 = Node(1)
     mynode1.node_attribs = [-0.2,1,0.45]
     mynode1.tpt_vals = [0.3,0.7]
@@ -206,7 +332,7 @@ if __name__=="__main__":
     print "ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
     print repr(mynode1), "\n", str(mynode1)
     del mynode1.node_attribs
-    print mynode1.qf
+    print "forward committor for node 1 has now been deleted. qf:", mynode1.qf
 
     mynode3 = Node(3)
     mynode3.node_attribs = [-0.5,4,0.25]
@@ -214,3 +340,17 @@ if __name__=="__main__":
     myedge2.to_from_nodes = [mynode1,mynode3]
     del myedge1.to_from_nodes
     print "new ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
+
+    ### MAIN ###
+    n_nodes = int(argv[1])
+    n_edges = int(argv[2])
+    n_comms = int(argv[3])
+    full_network = Ktn(n_nodes,n_edges,n_comms)
+    comms, conns, pi, k, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges)
+    full_network.construct_ktn(comms,conns,pi,k,node_ens,ts_ens)
+
+    ### TEST KTN ###
+    print "\n\n\n"
+    print "nbrlist for node 333: ", full_network.nodelist[332].nbrlist
+    print "edgelist_in for node 333: ", full_network.nodelist[332].edgelist_in
+    print "edgelist_out for node 333: ", full_network.nodelist[332].edgelist_out
