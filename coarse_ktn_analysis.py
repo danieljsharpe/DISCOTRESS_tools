@@ -11,22 +11,26 @@ Sep 2019
 import numpy as np
 from os.path import exists
 from sys import argv
+from scipy.sparse.linalg import eigs as eigs_iram
+from scipy.sparse import csr_matrix
 
 class Node(object):
 
-    def __init__(self,node_id):
-        self.node_id = node_id  # node ID
+    def __init__(self,node_id,ktn=None):
+        self.node_id = node_id  # node ID. NB indexed from 1
         self.node_en = None     # node "energy"
-        self.comm_id = None     # community ID
+        self.comm_id = None     # community ID. NB indexed from 0
         self.deg_in = None      # node in-degree
         self.deg_out = None     # node out-degree
-        self.pi = None          # node stationary probability
+        self.pi = None          # (log) node stationary probability
         self.mr = None          # reactive trajectory current
         self.qf = None          # node forward committor probability
         self.qb = None          # node backward committor probability
-        self.nbrlist = []       # list of neighbouring nodes
+        self.t = None           # self-transition probability
+        self.nbrlist= []        # list of neighbouring nodes via TO edges
         self.edgelist_in = []   # list of edges TO node
         self.edgelist_out = []  # list of edges FROM node
+        self.ktn = ktn          # a reference to the Ktn object to which the Node belongs
 
     def __repr__(self):
         return self.__class__.__name__+"("+str(self.node_id)+")"
@@ -55,7 +59,7 @@ class Node(object):
 
     @property
     def tpt_vals(self):
-        return self.qf, self.qb, self.mr
+        return self.qf, self.qb, self.mr, self.t
 
     ''' when updating the committor functions, calculate TPT quantities '''
     @tpt_vals.setter
@@ -69,7 +73,7 @@ class Node(object):
 
     @tpt_vals.deleter
     def tpt_vals(self):
-        self.qf, self.qb, self.mr = None, None, None
+        self.qf, self.qb, self.mr, self.t = None, None, None, None
 
     @staticmethod
     def calc_mr(node,dbalance=False):
@@ -81,19 +85,20 @@ class Node(object):
 
 class Edge(object):
 
-    def __init__(self,edge_id,ts_id):
-        self.edge_id = edge_id   # edge ID (NB is unique)
-        self.ts_id = ts_id       # transition state ID (NB edges are bidirectional, shared TS ID)
+    def __init__(self,edge_id,ts_id,ktn=None):
+        self.edge_id = edge_id   # edge ID (NB is unique) (NB indexed from 1)
+        self.ts_id = ts_id       # transition state ID (NB edges are bidirectional, shared TS ID) (NB indexed from 1)
         self.ts_en = None        # transition state energy
-        self.k = None            # transition rate
+        self.k = None            # (log) transition rate
         self.t = None            # transition probability
         self.j = None            # net flux
         self.f = None            # reactive flux
         self.fe = None           # net reactive flux
         self.deadts = False      # flag to indicate "dead" transition state
-        self.to_node = None
+        self.to_node = None      # edge is: to_node <- from_node
         self.from_node = None
         self.__rev_edge = None   # reverse edge, corresponding to from_node<-to_node
+        self.ktn = ktn           # a reference to the Ktn object to which the Edge belongs
 
     def __repr__(self):
         return self.__class__.__name__+"("+str(self.edge_id)+","+str(self.ts_id)+")"
@@ -138,16 +143,41 @@ class Edge(object):
         if (self.to_node is None) or (self.from_node is None): raise AttributeError
         return [self.to_node.node_id,self.from_node.node_id]
 
-    ''' set the TO and FROM nodes for this edge '''
+    ''' set the TO and FROM nodes for this edge. args[1] is bool to indicate if nodes are not already connected '''
     @to_from_nodes.setter
-    def to_from_nodes(self,nodes):
-        for node in nodes:
+    def to_from_nodes(self,args):
+        for node in args[0]:
             if node.__class__.__name__ != "Node": raise AttributeError
-        self.to_node, self.from_node = nodes[0], nodes[1]
-        self.to_node.nbrlist.append(self.from_node)
-        self.from_node.nbrlist.append(self.to_node)
-        self.to_node.edgelist_in.append(self)
-        self.from_node.edgelist_out.append(self)
+        self.to_node, self.from_node = args[0][0], args[0][1]
+        if (self.to_node.node_id==self.from_node.node_id): # self-loop: for KTNs indicates "dead" TS
+            del self.edge_attribs
+            return
+        dup_edge, edge = None, self
+        # check if edge is a duplicate of an existing edge (ie connects same pair of nodes)
+        if (args[1] and (any(x.node_id==self.to_node.node_id for x in self.from_node.nbrlist) \
+            or any(x.node_id==self.from_node.node_id for x in self.to_node.nbrlist))):
+            dup_to_idx = next((i for i, x in enumerate(self.to_node.nbrlist) if x==self.from_node.node_id),None)
+            dup_from_idx = next((i for i, x in enumerate(self.from_node.nbrlist) if x==self.to_node.node_id),None)
+            if dup_to_idx is not None: dup_edge = self.ktn.edgelist[dup_to_idx]
+            elif dup_from_idx is not None: dup_edge = self.ktn.edgelist[dup_from_idx]
+            if dup_edge is None: raise AttributeError # this should not happen
+            # delete the higher energy transition state
+            if dup_edge < self:
+                del self.edge_attribs
+                return # this edge is now "dead", elems to nodes' nbrlist/edgelist_'s are never added
+            else: # make the duplicate edge "dead" and remove entry in the relevant node's nbrlist
+                del dup_edge.edge_attribs
+                nbrlist, node = None, None
+                if dup_to_idx is not None:
+                    nbrlist, node = self.to_node.nbrlist, self.to_node
+                else:
+                    nbrlist, node = self.from_node.nbrlist, self.from_node
+                nbrlist.pop(nbrlist.index(node.node_id)) # required to remove and set again so nbrlist/edgelist_ entries correspond
+        if args[1] or dup_edge is not None: # update nbrlists of TO and FROM nodes
+            self.to_node.nbrlist.append(self.from_node)
+            self.from_node.nbrlist.append(self.to_node)
+        edge.to_node.edgelist_in.append(self)
+        edge.from_node.edgelist_out.append(self)
 
     @to_from_nodes.deleter
     def to_from_nodes(self):
@@ -213,8 +243,8 @@ class Ktn(object):
         self.n_nodes = n_nodes    # number of nodes
         self.n_edges = n_edges    # number of bidirectional edges
         self.n_comms = n_comms    # number of communities into which nodes are partitioned
-        self.nodelist = [Node(i) for i in range(self.n_nodes)]
-        self.edgelist = [Edge(i,i) for i in range(2*self.n_edges)]
+        self.nodelist = [Node(i+1,ktn=self) for i in range(self.n_nodes)]
+        self.edgelist = [Edge(i,((i-(i%2))/2)+1,ktn=self) for i in range(2*self.n_edges)]
         self.dbalance = False     # flag to indicate if detailed balance holds
         self.A = set()            # endpoint nodes in the set A (NB A<-B)
         self.B = set()            # endpoint nodes in the set B
@@ -230,8 +260,10 @@ class Ktn(object):
             self.edgelist[2*i].edge_attribs = [ts_ens[i],k[2*i]]
             self.edgelist[(2*i)+1].edge_attribs = [ts_ens[i],k[(2*i)+1]]
             # set edge connectivity
-            self.edgelist[2*i].to_from_nodes = [self.nodelist[conns[i][0]-1],self.nodelist[conns[i][1]-1]]
-            self.edgelist[(2*i)+1].to_from_nodes = [self.nodelist[conns[i][1]-1],self.nodelist[conns[i][0]-1]]
+            self.edgelist[2*i].to_from_nodes = ([self.nodelist[conns[i][0]-1],self.nodelist[conns[i][1]-1]],True)
+            self.edgelist[(2*i)+1].to_from_nodes = ([self.nodelist[conns[i][1]-1],self.nodelist[conns[i][0]-1]],False)
+            self.edgelist[2*i].rev_edge = self.edgelist[(2*i)+1]
+            self.edgelist[(2*i)+1].rev_edge = self.edgelist[2*i]
 
     ''' read (at least) node connectivity, stationary distribution and transition rates from files '''
     @staticmethod
@@ -284,38 +316,133 @@ class Ktn(object):
         return ((edge1.to_node==edge2.from_node) and (edge2.to_node==edge1.from_node))
 
     def renormalise_mr(self):
-        self.Zm = 0 # prob that a trajectory is reactive at a given instance in time
+        self.Zm = 0. # prob that a trajectory is reactive at a given instance in time
         for i in range(self.n_nodes):
             self.Zm += self.nodelist[i].mr
         for i in range(self.n_nodes):
             self.nodelist[i].mr *= 1./self.Zm
 
+    def renormalise_peq(self):
+        tot_pi, tot_pi2 = 0., 0. # accumulated stationary probability
+        for i in range(self.n_nodes):
+            tot_pi += self.nodelist[i].pi
+        for i in range(self.n_nodes):
+            self.nodelist[i].pi *= 1./tot_pi
+            tot_pi2 += self.nodelist[i].pi
+        assert (tot_pi2-1.) < 1.E-10
+
+    def construct_coarse_ktn(self):
+        coarse_ktn = Coarse_ktn(self)
+        return coarse_ktn
+
 class Coarse_ktn(Ktn):
 
-    pass
+    def __init__(self,parent_ktn):
+        if parent_ktn.__class__.__name__ != self.__class__.__bases__[0].__name__: raise AttributeError
+        super(Coarse_ktn,self).__init__(parent_ktn.n_comms,parent_ktn.n_comms*(parent_ktn.n_comms-1),None)
+        self.parent_ktn = parent_ktn
+        self.construct_coarse_ktn
+
+    ''' Construct a coarse network given the communities and inter-node transition rates for the full network
+        from which it is to be derived.
+        Note that a Coarse_ktn object has an empty edgelist that includes all inter-community transitions in a
+        *specific order*.
+        Note that Ktn.construct_coarse_ktn(...) is overridden here. Thus Ktn.construct_coarse_ktn() cannot be
+        called from the Coarse_ktn derived class, as is desirable '''
+    @property
+    def construct_coarse_ktn(self):
+        for i, node1 in enumerate(self.nodelist):
+            for j, node2 in enumerate(self.nodelist):
+                if node1.node_id==node2.node_id: continue
+                self.edgelist[(i*j)+j].to_from_nodes = ((node1,node2),node1.node_id<node2.node_id)
+        '''
+        i=0
+        for j, node1 in enumerate(self.nodelist):
+            for node2 in self.nodelist:
+                if node1.node_id==node2.node_id: continue
+                self.edgelist[i].to_from_nodes = ((node1,node2),True)
+                self.edgelist[i+1].to_from_nodes = ((node2,node1),False)
+                self.edgelist[i].rev_edge = self.edgelist[i+1]
+                self.edgelist[i+1].rev_edge = self.edgelist[i]
+                i += 2
+        for node in self.parent_ktn.nodelist:
+            for edge in node.edgelist_out: # loop over all TO edges
+                if node.comm_id != edge.to_node.comm_id: # inter-community edge
+                    idx = (node.comm_id*self.n_nodes)+edge.to_node.comm_id
+                    if edgelist[idx].k is None:
+                        edgelist[idx].k = np.exp(edge.k)
+                    else:
+                        edgelist[idx].k = np.log(np.exp(edgelist[idx].k)+edge.k)
+        '''
+#        for edge in self.edgelist:
+#            if edge.k is None: del edge.edge_attribs # mark inter-community edges with zero rate as "dead"
 
 class Analyse_coarse_ktn(object):
 
     def __init__(self):
         pass
 
+    ''' set up the transition rate matrix in CSR sparse format '''
+    def setup_sp_k_mtx(self,ktn):
+        K_row_idx, K_col_idx = [], [] # NB K[K_row_idx[i],K_col_idx[i]] = data[i]
+        K_data = []
+        nnz = 0 # count number of non-zero elements
+        for i, node in enumerate(ktn.nodelist):
+            diag_elem_idx = None # index of diagonal element in list
+            sum_elems = 0. # sum of off-diagonel elems
+            for j, nbr_node in enumerate(node.nbrlist):
+                if nbr_node.node_id > i+1: # need to add an entry that will be the diag elem
+                    diag_elem_idx = nnz
+                    K_row_idx.append(i)
+                    K_col_idx.append(i)
+                    K_data.append(0.)
+                    nnz += 1
+                K_row_idx.append(i)
+                K_col_idx.append(nbr_node.node_id-1)
+                K_elem = np.exp(node.edgelist_out[j].k)
+                K_data.append(K_elem)
+                nnz += 1
+                sum_elems += K_elem
+            if diag_elem_idx is not None:
+                K_data[diag_elem_idx] = -sum_elems
+            else:
+                K_row_idx.append(i)
+                K_col_idx.append(i)
+                K_data.append(-sum_elems)
+                nnz += 1
+        K_sp = csr_matrix((K_data,(K_row_idx,K_col_idx)),shape=(ktn.n_nodes,ktn.n_nodes),dtype=float)
+        return K_sp
+
     ''' set up the transition rate matrix '''
     def setup_k_mtx(self,ktn):
-        pass
-
-    ''' set up the sparse transition rate matrix '''
-    def setup_sp_k_mtx(self,ktn):
         pass
 
     ''' calculate the transition matrix by matrix exponential '''
     def calc_t(self,tau):
         pass
 
+    ''' calculate the linearised transition matrix '''
+    def calc_tlin(self,tau):
+        pass
+
+    ''' calculate the k dominant eigenvalues and eigenvectors of a sparse matrix by the implicitly restarted Arnoldi method (IRAM) '''
+    @staticmethod
+    def calc_eig_iram(M,k,which_eigs="SM"):
+        M_eigs, M_evecs = eigs_iram(M,k,which=which_eigs)
+        M_evecs = np.transpose(M_evecs)
+        M_evecs = np.array([M_evec for _,M_evec in sorted(zip(list(M_eigs),list(M_evecs)),key=lambda pair: pair[0])],dtype=float)
+        M_eigs = np.array(sorted(list(M_eigs),reverse=True),dtype=float)
+        return M_eigs, M_evecs
+
     ''' function to perform variational optimisation of the second dominant eigenvalue of
         the transition rate (and therefore of the transition) matrix, by perturbing the
         assigned communities and using a simulated annealing procedure '''
     def varopt_simann(self):
         pass
+
+    @staticmethod
+    def eigs_K_to_T(g,tau):
+        return np.exp(g*tau)
 
 if __name__=="__main__":
 
@@ -326,7 +453,7 @@ if __name__=="__main__":
     mynode2 = Node(6)
     mynode2.node_attribs = [-0.4,2,0.30]
     myedge1 = Edge(5,5)
-    myedge1.to_from_nodes = [mynode1,mynode2]
+    myedge1.to_from_nodes = ([mynode1,mynode2],True)
     mynode1.node_id = 2
     print "edge #1 to/from:", myedge1.to_from_nodes
     print "ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
@@ -337,7 +464,7 @@ if __name__=="__main__":
     mynode3 = Node(3)
     mynode3.node_attribs = [-0.5,4,0.25]
     myedge2 = Edge(8,8)
-    myedge2.to_from_nodes = [mynode1,mynode3]
+    myedge2.to_from_nodes = ([mynode1,mynode3],True)
     del myedge1.to_from_nodes
     print "new ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
 
@@ -354,3 +481,16 @@ if __name__=="__main__":
     print "nbrlist for node 333: ", full_network.nodelist[332].nbrlist
     print "edgelist_in for node 333: ", full_network.nodelist[332].edgelist_in
     print "edgelist_out for node 333: ", full_network.nodelist[332].edgelist_out
+
+    print "\ndominant eigenvalues of transition rate matrix:"
+    analyser = Analyse_coarse_ktn()
+    K_sp = analyser.setup_sp_k_mtx(full_network)
+    K_sp_eigs, K_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_sp,full_network.n_comms+5)
+    print K_sp_eigs
+
+    print "\nforming the coarse matrix:"
+    coarse_ktn = full_network.construct_coarse_ktn()
+    print "no. of nodes:", coarse_ktn.n_nodes
+    print "nbrlist for comm 2: ", coarse_ktn.nodelist[3].nbrlist
+    print "edgelist_in for comm 2: ", coarse_ktn.nodelist[3].edgelist_in
+    print "edgelist_out for comm 2: ", coarse_ktn.nodelist[3].edgelist_out
