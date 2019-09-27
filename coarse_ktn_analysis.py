@@ -65,8 +65,7 @@ class Node(object):
     @tpt_vals.setter
     def tpt_vals(self,vals):
         if self.t is None: self.calc_node_t()
-        if self.k_esc is None: self.calc_k_esc_in(mode=0)
-        if self.k_in is None: self.calc_k_esc_in(mode=1)
+        if (self.k_esc is None) or (self.k_in is None): self.calc_k_esc_in()
         update_edges = False
         if self.qf != None: update_edges = True
         self.qf, self.qb = vals[0], vals[1]
@@ -95,17 +94,17 @@ class Node(object):
             sum_t_out += edge.t
         self.t = 1.-sum_t_out
 
-    ''' calculate escape rate or total in rate for node '''
-    def calc_k_esc_in(self,mode):
-        print "updating k_esc/k_in for node %i" % self.node_id
-        edgelist, deg_obj = None, None
-        if mode==0: edgelist, deg_obj = self.edgelist_out, self.k_esc
-        elif mode==1: edgelist, deg_obj = self.edgelist_in, self.k_in
-        sum_k = -float("inf")
-        for edge in edgelist:
+    ''' calculate escape rate and total in rate for node '''
+    def calc_k_esc_in(self):
+        sum_k_esc, sum_k_in = -float("inf"), -float("inf")
+        for edge in self.edgelist_out:
             if edge.deadts: continue
-            sum_k = np.log(np.exp(sum_k)+np.exp(edge.k))
-        deg_obj = sum_k
+            sum_k_esc = np.log(np.exp(sum_k_esc)+np.exp(edge.k))
+        for edge in self.edgelist_in:
+            if edge.deadts: continue
+            sum_k_in = np.log(np.exp(sum_k_in)+np.exp(edge.k))
+        self.k_esc = sum_k_esc
+        self.k_in = sum_k_in
 
 class Edge(object):
 
@@ -295,10 +294,8 @@ class Ktn(object):
             self.edgelist[(2*i)+1].rev_edge = self.edgelist[2*i]
         self.renormalise_pi(mode=0) # check node stationary probabilities are normalised
         self.get_comm_stat_probs() # get stationary probabilities of communities
-        print "calculating k_esc/k_in for full network:"
         for node in self.nodelist:
-            node.calc_k_esc_in(0)
-            node.calc_k_esc_in(1)
+            node.calc_k_esc_in()
 
     ''' read (at least) node connectivity, stationary distribution and transition rates from files '''
     @staticmethod
@@ -375,7 +372,6 @@ class Ktn(object):
         for node in self.nodelist:
             self.comm_pi_vec[node.comm_id] = np.log(np.exp(self.comm_pi_vec[node.comm_id]) + \
                 np.exp(node.pi))
-        print self.comm_pi_vec
         assert abs(sum([np.exp(comm_pi) for comm_pi in self.comm_pi_vec])-1.) < 1.E-10
 
     def construct_coarse_ktn(self):
@@ -401,34 +397,34 @@ class Coarse_ktn(Ktn):
         for i, node in enumerate(self.nodelist):
             node.pi = self.parent_ktn.comm_pi_vec[i]
         self.renormalise_pi(mode=0) # check node stationary probabilities are normalised
-        for i, node1 in enumerate(self.nodelist):
+        for i, node1 in enumerate(self.nodelist): # initialise TO and FROM nodes of j<-i edges
             j=0
             for node2 in self.nodelist:
-                if node1.node_id==node2.node_id: continue
-#                print (i*self.n_nodes)+j+1, "FROM:", node1.node_id, "TO:", node2.node_id
-                self.edgelist[(i*self.n_nodes)+j].to_from_nodes = ((node2,node1),node1.node_id<node2.node_id)
+                if node1.node_id!=node2.node_id:
+                    idx = (i*(self.n_nodes-1))+j-(lambda x1, x2: (x1<x2 and 1 or 0))(i,j)
+                    self.edgelist[idx].to_from_nodes = ((node2,node1),node1.node_id<node2.node_id)
                 j += 1
         for i in range(len(self.nodelist)):
             for j in range(i+1,len(self.nodelist)): # note i<j
-                idx1 = (j*(self.n_nodes-1))+i   # edge index for j <- i
-                idx2 = (i*(self.n_nodes-1))+j-1 # edge index for i <- j
+                idx1 = (i*(self.n_nodes-1))+j-1 # edge index for j <- i
+                idx2 = (j*(self.n_nodes-1))+i   # edge index for i <- j
                 self.edgelist[idx1].rev_edge = self.edgelist[idx2]
                 self.edgelist[idx2].rev_edge = self.edgelist[idx1]
         for node in self.parent_ktn.nodelist: # FROM node
             for edge in node.edgelist_out: # loop over all FROM edges
                 if node.comm_id != edge.to_node.comm_id: # inter-community edge
-                    idx = edge.to_node.comm_id*(self.n_nodes-1)+node.comm_id-\
-                          (lambda x1, x2: (x1>x2 and 1 or 0))(node.comm_id,edge.to_node.comm_id)
+                    idx = (node.comm_id*(self.n_nodes-1))+edge.to_node.comm_id-\
+                          (lambda x1, x2: (x1<x2 and 1 or 0))(node.comm_id,edge.to_node.comm_id)
                     coarse_edge = self.edgelist[idx]
                     if coarse_edge.k is None:
-                        coarse_edge.k = np.exp(edge.k)
+                        coarse_edge.k = node.pi-self.nodelist[node.comm_id].pi+edge.k
                     else:
-                        coarse_edge.k = np.log(np.exp(coarse_edge.k)+np.exp(edge.k))
+                        coarse_edge.k = np.log(np.exp(coarse_edge.k)+np.exp(node.pi-self.nodelist[node.comm_id].pi+edge.k))
         for edge in self.edgelist:
-            if edge.k is None: del edge.edge_attribs # mark inter-community edges with zero rate as "dead"
+            if edge.k is None:
+                del edge.edge_attribs # mark inter-community edges with zero rate as "dead"
         for node in self.nodelist:
-            node.calc_k_esc_in(0)
-            node.calc_k_esc_in(1)
+            node.calc_k_esc_in()
 
 class Analyse_coarse_ktn(object):
 
@@ -439,35 +435,31 @@ class Analyse_coarse_ktn(object):
     def setup_sp_k_mtx(self,ktn):
         K_row_idx, K_col_idx = [], [] # NB K[K_row_idx[i],K_col_idx[i]] = data[i]
         K_data = []
+        # define lambda function to append an element
+        append_csr_elem = lambda row_idx, col_idx, elem, row_vec=K_row_idx, col_vec=K_col_idx, data_vec=K_data: \
+            (row_vec.append(row_idx), col_vec.append(col_idx), data_vec.append(elem))
         nnz = 0 # count number of non-zero elements
         for i, node in enumerate(ktn.nodelist):
+            sum_elems = 0.
             diag_elem_idx = None # index of diagonal element in list
-            sum_elems = 0. # sum of off-diagonal elems
-            for j, nbr_node in enumerate(node.nbrlist):
-                if nbr_node.node_id > i+1: # need to add an entry that will be the diag elem
+            if not node.edgelist_out:
+                append_csr_elem(i,i,0.)
+            for edge in node.edgelist_out:
+                if diag_elem_idx is not None and edge.to_node.node_id-1 > i: # need to add an entry that is the diag elem
                     diag_elem_idx = nnz
-                    K_row_idx.append(i)
-                    K_col_idx.append(i)
-                    K_data.append(0.)
+                    append_csr_elem(i,i,-np.exp(node.k_esc))
                     nnz += 1
-                if node.edgelist_out[j].deadts: continue
-                K_row_idx.append(i)
-                K_col_idx.append(nbr_node.node_id-1)
-                K_elem = np.exp(node.edgelist_out[j].k)
-                K_data.append(K_elem)
+                    continue
+                if edge.deadts: continue
+                append_csr_elem(i,edge.to_node.node_id-1,np.exp(edge.k))
                 nnz += 1
-                sum_elems += K_elem
-            if diag_elem_idx is not None:
-                K_data[diag_elem_idx] = -sum_elems
-            else:
-                K_row_idx.append(i)
-                K_col_idx.append(i)
-                K_data.append(-sum_elems)
+            if diag_elem_idx is None:
+                append_csr_elem(i,i,-np.exp(node.k_esc))
                 nnz += 1
         K_sp = csr_matrix((K_data,(K_row_idx,K_col_idx)),shape=(ktn.n_nodes,ktn.n_nodes),dtype=float)
         return K_sp
 
-    ''' set up the transition rate matrix '''
+    ''' set up the transition rate matrix (not sparse) '''
     def setup_k_mtx(self,ktn):
         pass
 
@@ -531,32 +523,31 @@ if __name__=="__main__":
     full_network.construct_ktn(comms,conns,pi,k,node_ens,ts_ens)
 
     ### TEST KTN ###
+    '''
     print "\n\n\n"
     print "nbrlist for node 333: ", full_network.nodelist[332].nbrlist
     print "edgelist_in for node 333: ", full_network.nodelist[332].edgelist_in
     print "edgelist_out for node 333: ", full_network.nodelist[332].edgelist_out
     print "stationary probabilities of communities:\n", [np.exp(x) for x in full_network.comm_pi_vec]
-    print "\nk_esc for nodes:"
-    for i in range(full_network.n_nodes): print full_network.nodelist[i].k_esc
+    '''
+    print "out edges for node 1:", len(full_network.nodelist[0].edgelist_out)
 
     print "\ndominant eigenvalues of transition rate matrix:"
     analyser = Analyse_coarse_ktn()
     K_sp = analyser.setup_sp_k_mtx(full_network)
-    K_sp_eigs, K_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_sp,14)
+    K_sp_eigs, K_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_sp,7)
     print K_sp_eigs
 
     print "\nforming the coarse matrix:"
     coarse_ktn = full_network.construct_coarse_ktn()
+    '''
     print "no. of nodes:", coarse_ktn.n_nodes
-    for i in range(coarse_ktn.n_nodes):
-        print i+1, full_network.nodelist[i].k_esc, coarse_ktn.nodelist[i].k_esc
-        print "\t", abs(coarse_ktn.nodelist[i].k_esc-full_network.nodelist[i].k_esc)>1.E-10
-#    print "nodelist:", coarse_ktn.nodelist
-#    print "edgelist:", coarse_ktn.edgelist
-#    print "nbrlist for comm 2: ", coarse_ktn.nodelist[2].nbrlist # need to except dead TSs
-#    print "edgelist_in for comm 2: ", coarse_ktn.nodelist[2].edgelist_in # ditto
-#    print "edgelist_out for comm 2: ", coarse_ktn.nodelist[2].edgelist_out # ditto
+    print "nodelist:", coarse_ktn.nodelist
+    print "edgelist:", coarse_ktn.edgelist
+    print "nbrlist for comm 2: ", coarse_ktn.nodelist[2].nbrlist # need to except dead TSs
+    print "edgelist_in for comm 2: ", coarse_ktn.nodelist[2].edgelist_in # ditto
+    print "edgelist_out for comm 2: ", coarse_ktn.nodelist[2].edgelist_out # ditto
+    '''
     K_C_sp = analyser.setup_sp_k_mtx(coarse_ktn)
-    K_C_sp_eigs, K_C_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_C_sp,14)
+    K_C_sp_eigs, K_C_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_C_sp,7)
     print K_C_sp_eigs
-    
