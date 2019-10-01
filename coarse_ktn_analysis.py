@@ -11,6 +11,7 @@ Sep 2019
 import numpy as np
 from os.path import exists
 from sys import argv
+from copy import copy
 from scipy.sparse.linalg import eigs as eigs_iram
 from scipy.sparse import csr_matrix
 
@@ -30,6 +31,7 @@ class Node(object):
         self.nbrlist = []       # list of neighbouring nodes via TO edges
         self.edgelist_in = []   # list of edges TO node
         self.edgelist_out = []  # list of edges FROM node
+        self.evec = [0.]        # list of values for the dominant eigenvectors (or associated errors)
         self.ktn = ktn          # a reference to the Ktn object to which the Node belongs
 
     def __repr__(self):
@@ -309,8 +311,25 @@ class Ktn(object):
         return comms, conns, pi, k, node_ens, ts_ens
 
     ''' write the network to files in a format readable by Gephi '''
-    def print_gephi_fmt(self,fmt=".gephi"):
-        pass
+    def print_gephi_fmt(self,fmt="csv",mode=0,evec_idx=0):
+        if exists("ktn_nodes."+fmt) or exists("ktn_edges."+fmt): raise AttributeError
+        ktn_nodes_f = open("ktn_nodes."+fmt,"w")
+        ktn_edges_f = open("ktn_edges."+fmt,"w")
+        if fmt=="csv": ktn_nodes_f.write("Id,Label,Energy,Community,pi,evec,mr,qf,qb")
+        if fmt=="csv": ktn_edges_f.write("Source,Target,Weight,Type,Energy,k,t,j,f,fe")
+        if fmt=="csv":
+            for node in self.nodelist:
+                ktn_nodes_f.write(str(node.node_id)+","+str(node.node_id)+","+str(node.node_en)+","+str(node.comm_id)+","+\
+                    str(node.pi)+","+str(node.evec[evec_idx])+","+str(node.mr)+","+str(node.qf)+","+str(node.qb)+"\n")
+        ktn_nodes_f.close()
+        if fmt=="csv" and mode==0: # directed edges (direction determined by net flux)
+            for edge in self.edgelist:
+                if edge.deadts: continue
+                if mode==0 and edge.fe=0.: continue # directed edges, direction determined by net reactive flux
+                if mode==1 and edge.j<0.: continue # directed edges, direction determined by net flux
+                ktn_edges_f.write(str(edge.from_node.node_id)+","+str(edge.to_node.node_id)+","+str(edge.k)+","+str(edge.ts_en)+\
+                    "directed,"+str(k)+","+str(t)+","+str(j)+","+str(f)+","+str(fe)+"\n")
+        ktn_edges_f.close()
 
     @staticmethod
     def read_single_col(fname,n_lines,fmt="int"):
@@ -461,8 +480,16 @@ class Analyse_coarse_ktn(object):
 
     ''' set up the transition rate matrix (not sparse) '''
     def setup_k_mtx(self,ktn):
-        pass
-
+        K = np.zeros((ktn.n_nodes,ktn.n_nodes),dtype=float)
+        for edge in ktn.edgelist:
+            if edge.deadts: continue
+            K[edge.from_node.node_id-1,edge.to_node.node_id-1] = np.exp(edge.k)
+        for node in ktn.nodelist:
+            K[node.node_id-1,node.node_id-1] = -np.exp(node.k_esc)
+        for i in range(ktn.n_nodes):
+            assert abs(np.sum(K[i,:])) < 1.E-10
+        return K
+        
     ''' calculate the transition matrix by matrix exponential '''
     def calc_t(self,tau):
         pass
@@ -475,16 +502,90 @@ class Analyse_coarse_ktn(object):
     @staticmethod
     def calc_eig_iram(M,k,which_eigs="SM"):
         M_eigs, M_evecs = eigs_iram(M,k,which=which_eigs)
-        M_evecs = np.transpose(M_evecs)
-        M_evecs = np.array([M_evec for _,M_evec in sorted(zip(list(M_eigs),list(M_evecs)),key=lambda pair: pair[0])],dtype=float)
-        M_eigs = np.array(sorted(list(M_eigs),reverse=True),dtype=float)
+        M_eigs, M_evecs = Analyse_coarse_ktn.sort_eigs(M_eigs,M_evecs)
         return M_eigs, M_evecs
+
+    @staticmethod
+    def calc_eig_all(M):
+        M_eigs, M_evecs = np.linalg.eig(M)
+        M_eigs, M_evecs = Analyse_coarse_ktn.sort_eigs(M_eigs,M_evecs)
+        return M_eigs, M_evecs
+
+    @staticmethod
+    def sort_eigs(eigs,evecs):
+        evecs = np.transpose(evecs)
+        evecs = np.array([M_evec for _,M_evec in sorted(zip(list(M_eigs),list(M_evecs)),key=lambda pair: pair[0])],dtype=float)
+        eigs = np.array(sorted(list(M_eigs),reverse=True),dtype=float)
+        return eigs, evecs
 
     ''' function to perform variational optimisation of the second dominant eigenvalue of
         the transition rate (and therefore of the transition) matrix, by perturbing the
         assigned communities and using a simulated annealing procedure '''
-    def varopt_simann(self):
-        pass
+    def varopt_simann(self,coarse_ktn,nsteps,seed=19):
+        np.random.seed(seed)
+        K_C = self.setup_k_mtx(coarse_ktn)
+        K_C_copy = None
+        K_C_eigs, K_C_evecs = Analyse_coarse_ktn.calc_eigs_all(K_C)
+        lambda2_prev = K_C_eigs[1]
+        niter=0
+        while (niter<nsteps):
+            K_C_copy = copy(K_C)
+            nodes_to_update = [0]*coarse_ktn.n_nodes # mask of coarse_ktn nodes whose escape times need updating
+            # find an inter-community edge
+            found_edge, edge = False, None
+            while not found_edge:
+                edge_id = np.random.randint(0,coarse_ktn.n_edges)
+                edge = coarse_ktn.parent_ktn.edgelist[edge_id]
+                if edge.deadts: continue
+                if edge.from_node.comm_id!=edge.to_node.comm_id: found_edge = True
+            nodes_to_update[edge.from_node.comm_id] = 1
+            nodes_to_update[edge.to_node.comm_id] = 1
+            # swap the community of a single boundary node
+            pick_node = np.random.random_integers(0,1)
+            if pick_node==1: edge = edge.rev_edge
+            old_from_comm = edge.from_node.comm_id
+            edge.from_node.comm_id = edge.to_node.comm_id
+            coarse_ktn.nodelist[old_from_comm].pi = np.log(np.exp(coarse_ktn.nodelist[old_from_comm].pi)-\
+                np.exp(edge.from_node.pi))
+            coarse_ktn.nodelist[edge.from_node.comm_id].pi = np.log(np.exp(\
+                coarse_ktn.nodelist[edge.from_node.comm_id].pi)+np.exp(edge.from_node.pi))
+            old_from_comm_pi_prev = coarse_ktn.nodelist[old_from_comm].pi
+            old_to_comm_pi_prev = coarse_ktn.nodelist[edge.from_node.comm_id].pi
+            for fn_edge in edge.from_node.edgelist_out: # scan neighbours FROM edge.from_node
+                if fn_edge.deadts: continue
+                nodes_to_update[fn_edge.to_node.comm_id] = 1
+                # transition is a new inter-community edge / inter-community edge now connects this different pair
+                if fn_edge.to_node.comm_id!=edge.from_node.comm_id:
+                    K_C[edge.from_node.comm_id,fn_edge.to_node.comm_id] += np.exp(edge.from_node.pi-\
+                        coarse_ktn.nodelist[edge.from_node.comm_id].pi+fn_edge.k)
+                    K_C[fn_edge.to_node.comm_id,edge.from_node.comm_id] += np.exp(fn_edge.to_node.pi-\
+                        coarse_ktn.nodelist[fn_edge.to_node.comm_id].pi+fn_edge.rev_edge.k)
+                # transition is no longer an inter-community edge / inter-community edge now connects a different pair
+                if fn_edge.to_node.comm_id!=old_from_comm:
+                    fn_to_comm_pi = coarse_ktn.nodelist[fn_edge.to_node.comm_id].pi
+                    if fn_edge.to_node.comm_id==edge.from_node.comm_id: fn_to_comm_pi = old_to_comm_pi_prev
+                    K_C[old_from_comm,fn_edge.to_node.comm_id] -= \
+                        np.exp(edge.from_node.pi-old_from_comm_pi_prev+fn_edge.k)
+                    K_C[fn_edge.to_node.comm_id,old_from_comm] -= \
+                        np.exp(fn_edge.to_node.pi-fn_to_comm_pi+fn_edge.rev_edge.k)
+            # update the stationary probabilities of nodes [communities] of the Coarse_ktn object
+            # account for the population changes of the two perturbed communities in the inter-community rates
+            
+            # update the escape times of communities
+
+            # (in data structure)
+            # (diag elems of K_C)
+            K_C_eigs, K_C_evecs = Analyse_coarse_ktn.calc_eigs_all(K_C)
+            if lambda2_prev < K_C_eigs[1]: # second dominant eigenvalue of rate matrix has increased, accept move
+                print "accepting move %i: %f -> %f" % (n_iter,lambda2_prev,K_C_eigs[1])
+                lambda2_prev = K_C_eigs[1]
+            else: # reject move
+                K_C = copy(K_C_copy)
+                edge.from_node.comm_id = old_from_comm
+                coarse_ktn.nodelist[old_from_comm].pi = old_from_comm_pi_prev
+                coarse_ktn.nodelist[edge.from_node.comm_id].pi = old_to_comm_pi_prev
+            niter += 1
+        # update the stationary probability vector of communities in the Ktn object
 
     @staticmethod
     def eigs_K_to_T(g,tau):
@@ -537,6 +638,10 @@ if __name__=="__main__":
     K_sp = analyser.setup_sp_k_mtx(full_network)
     K_sp_eigs, K_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_sp,7)
     print K_sp_eigs
+    
+    tau = 1.E+4
+    print "\n eigenvalues of transition matrix, lag time:", tau
+    print [Analyse_coarse_ktn.eigs_K_to_T(g,tau) for g in K_sp_eigs]
 
     print "\nforming the coarse matrix:"
     coarse_ktn = full_network.construct_coarse_ktn()
@@ -548,6 +653,11 @@ if __name__=="__main__":
     print "edgelist_in for comm 2: ", coarse_ktn.nodelist[2].edgelist_in # ditto
     print "edgelist_out for comm 2: ", coarse_ktn.nodelist[2].edgelist_out # ditto
     '''
+    print "\neigenvalues of coarse matrix (sparse):"
     K_C_sp = analyser.setup_sp_k_mtx(coarse_ktn)
-    K_C_sp_eigs, K_C_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_C_sp,7)
+    K_C_sp_eigs, K_C_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_C_sp,3)
     print K_C_sp_eigs
+    print "\neigenvalues of coarse matrix (not sparse):"
+    K_C = analyser.setup_k_mtx(coarse_ktn)
+    K_C_eigs, K_C_evecs = Analyse_coarse_ktn.calc_eig_all(K_C)
+    print K_C_eigs
