@@ -41,6 +41,7 @@ tau = 0.002 # lag time for estimation of transition matrix
 tau_C = 0.002 # lag time for estimatation of coarse transition matrix
 k = 10 # no. of eigenvectors of the (full) transition matrix to calculate
 n_it_var = 1200 # no. of steps in variational optimisation of second eigenvalue
+dump_network = False # write the graph to files and quit Y/N
 # Erdos-Renyi random graph model:
 # as p*n_V -> c > 1, then the graph will almost surely have a single large connected
 # component of order n_V (percolation transition threshold exceeded)
@@ -62,6 +63,7 @@ for i in range(n_V):
                 while True:
                     K[nodes[0],nodes[1]] = np.random.normal(mean_k,sigma_k)
                     if K[nodes[0],nodes[1]] > 0.: break
+
 # now set diagonal elements of transition rate matrix
 for i in range(n_V):
     K[i,i] = -np.sum(K[i,:])
@@ -86,6 +88,24 @@ K_evals, K_evecs = eigs(K,k,which="SM")
 pi = np.array(K_evecs[:,0]*(1./np.sum(K_evecs[:,0])),dtype=float)
 # print "stationary distribution pi:\n", pi
 assert abs(np.sum(pi)-1.) < 1.0E-10, "Error, node stationary probabilities do not sum to 1"
+
+if dump_network:
+    sp_f = open("stat_prob_sbm.dat","w")
+    comms_f = open("communities_sbm.dat","w")
+    ts_conns_f = open("ts_conns_sbm.dat","w")
+    ts_weights_f = open("ts_weights_sbm.dat","w")
+    for i in range(n_V):
+        sp_f.write("%5.24f\n" % np.log(pi[i]))
+        comms_f.write("%i\n" % c_idx[i])
+        for j in range(i+1,n_V):
+            if K[i,j]==0.: continue
+            ts_conns_f.write("%i %i\n" % (i+1,j+1))
+            ts_weights_f.write("%5.24f\n%5.24f\n" % (np.log(K[i,j]),np.log(K[j,i])))
+    sp_f.close()
+    comms_f.close()
+    ts_conns_f.close()
+    ts_weights_f.close()
+    quit()
 
 balance = True
 for i in range(n_V):
@@ -130,11 +150,11 @@ for i in range(k):
 # transition rate matrix is not optimal
 #'''
 c_idx = []
-c_idx.extend([0]*130)
-c_idx.extend([1]*80)
-c_idx.extend([2]*125)
-c_idx.extend([3]*85)
-c_idx.extend([4]*80)
+c_idx.extend([0]*140)
+c_idx.extend([1]*90)
+c_idx.extend([2]*50)
+c_idx.extend([3]*160)
+c_idx.extend([4]*60)
 #'''
 
 # construct a coarse-grained transition rate matrix, estimated from rate constants for inter-community
@@ -211,7 +231,7 @@ while n_it < n_it_var:
     while edge_changes:
         # choose one of the two nodes to assign to the `opposite' community
         node_pair = edge_changes.pop()
-        pick_node = np.random.randint(0,1)
+        pick_node = np.random.randint(0,2)
         if pick_node == 0: unpick_node = 1
         elif pick_node == 1: unpick_node = 0
         old_c_idx = c_idx_var[node_pair[pick_node]] # old community index for the node that has swapped communities
@@ -280,6 +300,7 @@ while n_it < n_it_var:
         eval_K_prog_f.write("   %1.6f" % K_C_eval)
     eval_K_prog_f.write("\n")
     n_it += 1
+
 eval_T_prog_f.close()
 eval_K_prog_f.close()
 print "\nNumber of successful community updates:", n_success
