@@ -14,6 +14,7 @@ from sys import argv
 from copy import copy
 from scipy.sparse.linalg import eigs as eigs_iram
 from scipy.sparse import csr_matrix
+from scipy.linalg import expm
 from scipy import optimize # code is written for v0.17.0, also tested for v0.18.0
 
 class Node(object):
@@ -83,12 +84,9 @@ class Node(object):
         self.qf, self.qb, self.mr, self.t, self.k_esc = [None]*5
 
     @staticmethod
-    def calc_mr(node,dbalance=False):
+    def calc_mr(node):
         if not Ktn.check_if_node(node): raise AttributeError
-        if not dbalance:
-            return node.pi*node.qf*node.qb
-        else:
-            return node.pi*node.qf*(1.-node.qf)
+        return node.pi*node.qf*node.qb
 
     ''' calculate self-transition probability for node '''
     def calc_node_t(self):
@@ -150,6 +148,7 @@ class Edge(object):
         if (edge1.t is not None) and (edge2.t is not None): edge1.t += edge2.t
         if (edge1.j is not None) and (edge2.j is not None): edge1.j += edge2.j
         if (edge1.f is not None) and (edge2.f is not None): edge1.f += edge2.f
+        if (edge1.fe is not None) and (edge2.fe is not None): edge1.fe += edge2.fe
         del edge2.edge_attribs
 
     @property
@@ -226,19 +225,19 @@ class Edge(object):
         return [self.j,self.f,self.fe]
 
     @flow_vals.setter
-    def flow_vals(self):
+    def flow_vals(self,dummy):
         if (self.to_node is None) or (self.from_node is None): raise AttributeError
         if self.j is None: # net flux values have not been set yet, do so now
-            j1, j2 = Edge.calc_j(self,self.edge.rev_edge)
+            j1, j2 = Edge.calc_j(self)
             self.j = j1
             self.rev_edge.j = j2
         # if the committors of the TO and FROM nodes are set, can calculate TPT flux quantities now
         if (self.to_node.qf is None) or (self.from_node.qf is None): return
         if self.f is None: # reactive flux has not been set yet
-            f1, f2 = Edge.calc_f(self,self.edge.rev_edge)
+            f1, f2 = Edge.calc_f(self)
             self.f = f1
             self.rev_edge.f = f2
-            fe1, fe2 = Edge.calc_fe(self,self.edge.rev_edge)
+            fe1, fe2 = Edge.calc_fe(self)
             self.fe = fe1
             self.rev_edge.fe = fe2
 
@@ -247,7 +246,8 @@ class Edge(object):
         self.j, self.f, self.fe = None, None, None
 
     @staticmethod
-    def calc_j(edge1,edge2):
+    def calc_j(edge):
+        edge1, edge2 = edge, edge.rev_edge
         if not ((Ktn.check_if_edge(edge1)) or (Ktn.check_if_edge(edge2))): raise AttributeError
         if not Ktn.check_edge_reverse(edge1,edge2): raise AttributeError
         if ((edge1.k is None) or (edge2.k is None)): raise AttributeError
@@ -256,19 +256,17 @@ class Edge(object):
         return j1, j2
 
     @staticmethod
-    def calc_f(edge1,edge2,dbalance=False):
+    def calc_f(edge):
+        edge1, edge2 = edge, edge.rev_edge
         if not ((Ktn.check_if_edge(edge1)) or (Ktn.check_if_edge(edge2))): raise AttributeError
         if not Ktn.check_edge_reverse(edge1,edge2): raise AttributeError
-        if not dbalance:
-            f1 = np.exp(edge1.from_node.pi)*edge1.from_node.qb*np.exp(edge1.k)*edge1.to_node.qf
-            f2 = np.exp(edge2.from_node.pi)*edge2.from_node.qb*np.exp(edge2.k)*edge2.to_node.qf
-        else:
-            pass
-            # quack
+        f1 = np.exp(edge1.from_node.pi)*edge1.from_node.qb*np.exp(edge1.k)*edge1.to_node.qf
+        f2 = np.exp(edge2.from_node.pi)*edge2.from_node.qb*np.exp(edge2.k)*edge2.to_node.qf
         return f1, f2
 
     @staticmethod
-    def calc_fe(edge1,edge2):
+    def calc_fe(edge):
+        edge1, edge2 = edge, edge.rev_edge
         if not ((Ktn.check_if_edge(edge1)) or (Ktn.check_if_edge(edge2))): raise AttributeError
         if not Ktn.check_edge_reverse(edge1,edge2): raise AttributeError
         if ((edge1.f is None) or (edge2.f is None)): raise AttributeError
@@ -296,6 +294,9 @@ class Ktn(object):
         self.dbalance = True      # flag to indicate if detailed balance holds
         self.A = set()            # endpoint nodes in the set A (NB A<-B)
         self.B = set()            # endpoint nodes in the set B
+        self.tpt_calc_done = False # flag to indicate if (all) TPT values have been calculated for nodes and edges
+        self.tau = None           # lag time at which properties (eg characteristic timescales, transition probability
+                                  # matrix, etc.) of the Ktn have been calculated
         if not isinstance(self,Coarse_ktn): # do not do this for Coarse_ktn class
             self.comm_pi_vec = [-float("inf")]*self.n_comms # (log) stationary probabilities of communities
             self.comm_sz_vec = [0]*self.n_comms # number of nodes in each community
@@ -337,6 +338,13 @@ class Ktn(object):
         ts_ens = Ktn.read_single_col("ts_ens.dat",n_edges,fmt="float") # optional
         return comms, conns, pi, k, node_ens, ts_ens
 
+    ''' read forward and backward committor functions from files and update Ktn data structure '''
+    def read_committors(self,nw_str="full"):
+        if not exists("qf."+nw_str+".dat") or not exists("qb."+nw_str+".dat"): raise RuntimeError
+        qf = Ktn.read_single_col("qf."+nw_str+".dat",self.n_nodes,fmt="float")
+        qb = Ktn.read_single_col("qb."+nw_str+".dat",self.n_nodes,fmt="float")
+        self.update_all_tpt_vals(qf,qb)
+
     ''' write the network to files in a format readable by Gephi '''
     def print_gephi_fmt(self,fmt="csv",mode=0,evec_idx=0):
         if exists("ktn_nodes."+fmt) or exists("ktn_edges."+fmt): raise RuntimeError
@@ -346,9 +354,9 @@ class Ktn(object):
         if fmt=="csv": ktn_edges_f.write("Source,Target,Weight,Type,Energy,k,t,j,f,fe")
         if fmt=="csv":
             for node in self.nodelist:
-                ktn_nodes_f.write(str(node.node_id)+","+str(node.node_id)+","+str(node.node_en)+","+str(node.comm_id)+","+\
-                    str(node.pi)+","+str(node.mr)+","+str(node.qf)+","+str(node.qb)+","+str(node.evec[evec_idx]))
-
+                ktn_nodes_f.write(str(node.node_id)+","+str(node.node_id)+","+str(node.node_en)+","+\
+                    str(node.comm_id)+","+str(node.pi)+","+str(node.mr)+","+str(node.qf)+","+str(node.qb)+\
+                    ","+str(node.evec[evec_idx]))
                 if self.__class__.__name__ == "Coarse_ktn":
                     ktn_nodes_f.write(","+str(node.evec_err[evec_idx]))
                 ktn_nodes_f.write("\n")
@@ -358,8 +366,9 @@ class Ktn(object):
                 if edge.deadts: continue
                 if mode==0 and edge.fe==0.: continue # directed edges, direction determined by net reactive flux
                 if mode==1 and edge.j<0.: continue # directed edges, direction determined by net flux
-                ktn_edges_f.write(str(edge.from_node.node_id)+","+str(edge.to_node.node_id)+","+str(edge.k)+","+str(edge.ts_en)+\
-                    "directed,"+str(k)+","+str(t)+","+str(j)+","+str(f)+","+str(fe)+"\n")
+                ktn_edges_f.write(str(edge.from_node.node_id)+","+str(edge.to_node.node_id)+","+\
+                    str(edge.k)+","+str(edge.ts_en)+"directed,"+str(k)+","+str(t)+","+str(j)+","+\
+                    str(f)+","+str(fe)+"\n")
         ktn_edges_f.close()
 
     @staticmethod
@@ -436,19 +445,25 @@ class Ktn(object):
         else:
             raise RuntimeError
         qf = calc_committors_func(direction="f")
-        print "qf:\n", qf
-        qf = [1., 0.81868479, 0.49763118, 0., 0.76767669] # quack
         if not self.dbalance:
             qb = calc_committors_func(direction="b")
         else:
             qb = np.array([1.-qf_i for qf_i in qf])
+        self.update_all_tpt_vals(qf,qb)
+
+        ''' update committor function values in Node data structures, and set other TPT values in the Node's and
+            Edge's of the Ktn data structure (eg reactive fluxes etc) '''
+    def update_all_tpt_vals(self,qf,qb):
         for node in self.nodelist:
             node.tpt_vals = [qf[node.node_id-1], qb[node.node_id-1]]
         for edge in self.edgelist:
-            edge.flow_vals
+            if edge.deadts: continue
+            edge.flow_vals = 0
+        self.tpt_calc_done = True
 
     ''' calculate the committor functions by formulating a constrained linear optimisation problem '''
     def calc_committors_linopt(self,direction="f",seed=21):
+        print "calculating committor functions by constrained linear optimisation..."
         np.random.seed(seed)
         if direction=="f": # calculate forward committor function (A<-B)
             start_set, final_set = self.B, self.A
@@ -479,7 +494,8 @@ class Ktn(object):
         x0 = np.random.rand(self.n_nodes)
         conopt_func = lambda x: np.dot(np.dot(K,x),np.dot(K,x)) # cast problem as linear eqn of form Ax=0
         q_res = optimize.minimize(conopt_func,x0=x0,method="SLSQP",bounds=[(0.,1.)]*self.n_nodes, \
-            tol=1.E-8,constraints=q_constraints,options={"maxiter": 500, "eps": 1.E-10, "ftol": 1.E-8})
+            tol=1.E-8,constraints=q_constraints, \
+            options={"maxiter": 500, "eps": 1.E-10, "ftol": 1.E-8, "iprint":3, "disp": True})
         if not q_res.success: raise RuntimeError
         q = q_res.x # vector of committor function values
         return q
@@ -528,7 +544,8 @@ class Ktn(object):
         coarse_ktn = Coarse_ktn(self)
         return coarse_ktn
 
-    ''' dump relevant node information to files: eigenvectors, eigenvector errors, communities. If called
+    ''' dump relevant node information to files: eigenvectors, eigenvector errors, communities. Also write
+        committor functions and reactive trajectory current if calculated. If called
         from a Coarse_ktn object, then data for both the coarse and parent KTN objects is written '''
     def write_nodes_info(self):
         full_network, coarse_network = self, None
@@ -560,6 +577,47 @@ class Ktn(object):
         with open("communities_new.dat","w") as comms_new_f:
             for node in full_network.nodelist:
                 comms_new_f.write(str(node.comm_id)+"\n")
+        for [network, nw_str] in zip([full_network,coarse_network],["full","coarse"]):
+            if network is None: continue
+            if not network.tpt_calc_done: continue
+            if (exists("qf."+nw_str+".dat") or exists("qb."+nw_str+".dat") or \
+                exists("mr."+nw_str+".dat")): raise RuntimeError
+            qf_f = open("qf."+nw_str+".dat","w")
+            qb_f = open("qb."+nw_str+".dat","w")
+            mr_f = open("mr."+nw_str+".dat","w")
+            for node in network.nodelist:
+                qf_f.write("%1.12f\n" % node.qf)
+                qb_f.write("%1.12f\n" % node.qb)
+                mr_f.write("%1.12f\n" % node.mr)
+            qf_f.close()
+            qb_f.close()
+            mr_f.close()
+
+    ''' dump relevant edge information to files '''
+    def write_edges_info(self):
+        full_network, coarse_network = self, None
+        if isinstance(self,Coarse_ktn): coarse_network, full_network = self, self.parent_ktn
+        full_tprobs, coarse_tprobs = False, False # flags indicate if transition probabilities have been calculated
+        for [network, nw_str] in zip([full_network,coarse_network],["full","coarse"]):
+            if (exists("reactive_flux."+nw_str+".dat") or exists("net_reactive_flux."+nw_str+".dat") or \
+                exists("trans_probs."+nw_str+".dat")): raise RuntimeError
+            if network.tau is not None:
+                trans_probs_f = open("trans_probs."+nw_str+".dat","w")
+            if network.tpt_calc_done:
+                reac_flux_f = open("reactive_flux."+nw_str+".dat","w")
+                net_reac_flux_f = open("net_reactive_flux."+nw_str+".dat","w")
+            for edge in network.edgelist:
+                if edge.deadts: continue
+                if network.tau is not None:
+                    trans_probs_f.write("%i %i   %1.12f\n" % (edge.from_node.node_id,edge.to_node.node_id,edge.t))
+                if network.tpt_calc_done:
+                    reac_flux_f.write("%i %i   %1.12f\n" % (edge.from_node.node_id,edge.to_node.node_id,edge.f))
+                    net_reac_flux_f.write("%i %i   %1.12f\n" % (edge.from_node.node_id,edge.to_node.node_id,edge.fe))
+            if network.tau is not None:
+                trans_probs_f.close()
+            if network.tpt_calc_done:
+                reac_flux_f.close()
+                net_reac_flux_f.close()
 
 class Coarse_ktn(Ktn):
 
@@ -633,6 +691,7 @@ class Analyse_coarse_ktn(object):
     ''' set up the transition rate matrix in CSR sparse format '''
     @staticmethod
     def setup_sp_k_mtx(ktn):
+        if not isinstance(ktn,Ktn) and not isinstance(ktn,Coarse_ktn): raise RuntimeError
         K_row_idx, K_col_idx = [], [] # NB K[K_row_idx[i],K_col_idx[i]] = data[i]
         K_data = []
         # define lambda function to append an element
@@ -805,11 +864,74 @@ class Analyse_coarse_ktn(object):
                 edge.from_node.comm_id = old_from_comm
             niter += 1
         # update the stationary probability vector of communities in the Ktn object
-
+        # quack
         return K_C
 
-    def isocommittor_surfaces(self):
-        pass
+    ''' perform an analysis of the series of isocommittor cuts on a KTN. The isocommittor cuts are defined at intervals of
+        1/(ncuts+1). ncuts=1 calculates the TSE only '''
+    @staticmethod
+    def isocommittor_cut_analysis(ktn,ncuts=1,dircn="f",writedata=True):
+        if not isinstance(ktn,Ktn) and not isistance(ktn,Coarse_ktn): raise RuntimeError
+        if not ktn.tpt_calc_done: raise AttributeError # need committor functions and other TPT values for this analysis
+        incmt=1./float(ncuts+1)
+        alpha_vals = [0.+(incmt*float(i)) for i in range(1,ncuts+1)]
+        cut_edges_all = [[] for i in range(ncuts)]
+        for i, alpha_val in enumerate(alpha_vals):
+            cut_edges = Analyse_coarse_ktn.get_isocommittor_cut(ktn,alpha_val,dircn=dircn)
+            cut_edges_all[i] = cut_edges
+            if not writedata: continue
+            with open("cut_flux.alpha"+str(alpha_val)+".dat","w") as cut_flux_f:
+                cut_flux_f.write("# cumulative flux      cumulative relative flux      alpha=%f\n" % alpha_val)
+                for j, cut_edge in enumerate(cut_edges_all[i]):
+                    cut_flux_f.write("%i    %1.12f    %1.12f\n" % (j,cut_edge[1],cut_edge[2]))
+
+    ''' retrieve the set of edges that form the isocommittor cut defined by a committor function value equal to alpha.
+        alpha=0.5 defines the transition state ensemble (TSE) '''
+    @staticmethod
+    def get_isocommittor_cut(ktn,alpha,dircn="f"):
+        if not isinstance(ktn,Ktn) and not isistance(ktn,Coarse_ktn): raise RuntimeError
+        if alpha<=0. or alpha>=1.: raise RuntimeError
+        if not ktn.tpt_calc_done: raise AttributeError # need committor functions and other TPT values for this analysis
+        J = 0. # reactive A-B flux
+        cut_edges = [] # list of edges that constitute the isocommittor cut in format (edge,J_ij,rel J_ij)
+        for edge in ktn.edgelist:
+            if edge.deadts: continue
+            edge_in_cut = None
+            if dircn=="f" and edge.to_node.qf>alpha and edge.from_node.qf<alpha:
+                edge_in_cut = edge
+                comm_diff = edge_in_cut.to_node.qf-edge_in_cut.from_node.qf # difference in committors across edge of cut
+            elif dircn=="b" and edge.from_node.qb>alpha and edge.to_node.qb<alpha:
+                edge_in_cut = edge.rev_edge
+                comm_diff = edge_in_cut.to_node.qb-edge_in_cut.from_node.qb
+            if edge_in_cut is None: continue
+            J_ij = np.exp(edge_in_cut.k+edge_in_cut.from_node.pi)*comm_diff
+            cut_edges.append([edge_in_cut,J_ij,J_ij])
+            J += J_ij
+        for cut_edge in cut_edges: cut_edge[2] *= 1./J
+        cut_edges = sorted(cut_edges,key=lambda x: x[2],reverse=True)
+        for i in range(1,len(cut_edges)):
+            cut_edges[i][1] += cut_edges[i-1][1]
+            cut_edges[i][2] += cut_edges[i-1][2]
+        return cut_edges
+
+    ''' calculate the Kullback-Liebler divergence between two transition networks. This relative entropy measure
+        quantifies the difference in transition probability distributions between two transition probability matrices.
+        NB the KL divergence is asymmetric '''
+    @staticmethod
+    def calc_kl_div(ktn1,ktn2):
+        if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
+           (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
+        if ktn1.tau is None or ktn2.tau is None: # this analysis requires that transition probabilities have been calculated
+            raise AttributeError
+
+    ''' calculate the Jensen-Shannon divergence between two transition networks. The JS divergence is essentially a
+        symmetrised equivalent of the KL divergence '''
+    @staticmethod
+    def calc_js_div(ktn1,ktn2):
+        if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
+           (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
+        if ktn1.tau is None or ktn2.tau is None: # this analysis requires that transition probabilities have been calculated
+            raise AttributeError
 
     @staticmethod
     def eigs_K_to_T(g,tau):
@@ -895,6 +1017,11 @@ if __name__=="__main__":
     print "\ncoarse transition rate matrix:"
     print K_C
 
+    # calculate committor functions by SLSQP constrained linear optimisation
+#    full_network.calc_committors(method="linopt")
+    # read committor functions from files
+    full_network.read_committors("full")
+
     '''
     print "\n doing variational optimisation of coarse rate matrix:"
     K_C_opt = analyser.varopt_simann(coarse_ktn,5000)
@@ -905,9 +1032,10 @@ if __name__=="__main__":
     print [1./eig for eig in K_C_opt_eigs]
     print "stationary probabilities of coarse nodes:\n", [np.exp(x.pi) for x in coarse_ktn.nodelist]
     '''
-    '''
-    coarse_ktn.get_eigvecs()
-    coarse_ktn.write_nodes_info()
-    '''
 
-    coarse_ktn.calc_committors(method="linopt")
+    # get eigenvectors and dump information to files   
+#    coarse_ktn.get_eigvecs()
+#    coarse_ktn.write_nodes_info()
+#    coarse_ktn.write_edges_info()
+
+    Analyse_coarse_ktn.isocommittor_cut_analysis(full_network,3)
