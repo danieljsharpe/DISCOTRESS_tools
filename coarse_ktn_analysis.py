@@ -2,7 +2,8 @@
 Main Python script to estimate and analyse a coarse transition network
 Usage:
 python coarse_ktn_analysis.py <n_nodes> <n_edges> <n_comms>
-requires 6x input data files
+requires 6x input data files:
+communities.dat, stat_prob.dat, ts_conns.dat, ts_weights.dat, min.A, min.B
 
 Daniel J. Sharpe
 Sep 2019
@@ -30,6 +31,7 @@ class Node(object):
         self.k_esc = None       # escape rate from node (node out-degree)
         self.k_in = None        # sum of transition rates into node (node in-degree)
         self.t = None           # self-transition probability
+        self.s = None           # surprisal metric OR contribution of node to relative entropy 
         self.nbrlist = []       # list of neighbouring nodes via TO edges
         self.edgelist_in = []   # list of edges TO node
         self.edgelist_out = []  # list of edges FROM node
@@ -138,17 +140,25 @@ class Edge(object):
         if other_edge.__class__.__name__ != "Edge": raise AttributeError
         return self.ts_en < other_edge.ts_en
 
-    ''' merge a pair of edges - only allow if start/end nodes are the same for both edges '''
+    ''' return an edge that has summed flow values of two argument edges '''
     def __add__(self,other_edge):
+        if not ((self.to_node.node_id==other_edge.to_node.node_id) and \
+                 (self.from_node.node_id==other_edge.from_node.node_id)): raise AttributeError
+        new_edge = copy(self)
+        new_edge.k = np.log(np.exp(self.k)+np.exp(other_edge.k))
+        if (self.t is not None) and (other_edge.t is not None): new_edge.t = self.t+other_edge.t
+        if (self.j is not None) and (other_edge.j is not None): new_edge.j = self.j+other_edge.j
+        if (self.f is not None) and (other_edge.f is not None): new_edge.f = self.f+other_edge.f
+        if (self.fe is not None) and (other_edge.fe is not None): new_edge.fe = self.fe+other_edge.fe
+        return new_edge
+
+    ''' merge a pair of edges - only allow if start/end nodes are the same for both edges. The edge of faster rate is retained '''
+    def merge_edges(self,other_edge):
         if self < other_edge: edge1, edge2 = self, other_edge
         else: edge1, edge2 = other_edge, self
         if not ((edge1.to_node==edge2.to_node) and (edge1.from_node==edge2.from_node)):
             raise AttributeError
-        edge1.k += edge2.k
-        if (edge1.t is not None) and (edge2.t is not None): edge1.t += edge2.t
-        if (edge1.j is not None) and (edge2.j is not None): edge1.j += edge2.j
-        if (edge1.f is not None) and (edge2.f is not None): edge1.f += edge2.f
-        if (edge1.fe is not None) and (edge2.fe is not None): edge1.fe += edge2.fe
+        edge1 = edge1+edge2
         del edge2.edge_attribs
 
     @property
@@ -301,6 +311,50 @@ class Ktn(object):
             self.comm_pi_vec = [-float("inf")]*self.n_comms # (log) stationary probabilities of communities
             self.comm_sz_vec = [0]*self.n_comms # number of nodes in each community
 
+    ''' return a Ktn object that is the result of merging two TNs. The two TNs must be 'related' - that is, have the same number
+        of nodes. The Ktn has averaged Node stationary probabilities and Edge transition rates and probabilities '''
+    def __add__(self,other_ktn):
+        if self.n_nodes!=other_ktn.n_nodes: raise AttributeError
+        new_ktn = copy(self)
+        for i in range(new_ktn.n_nodes):
+            node = new_ktn.nodelist[i]
+            node_alt = other_ktn.nodelist[i]
+            node.pi = np.log((np.exp(node.pi)+np.exp(node_alt.pi))/2.)
+            node.t = (node.t+node_alt.t)/2.
+            n_out_edges = len(node.edgelist_out)
+            node.edgelist_out = sorted(node.edgelist_out,key=lambda x: x.to_node.node_id)
+            node_alt_edgelist_out = sorted(node_alt.edgelist_out,key=lambda x: x.to_node.node_id)
+            i1,i2 = 0,0
+            while i1<n_out_edges and i2<len(node_alt_edgelist_out):
+                curr_edge = None
+                if node.edgelist_out[i1].to_node.node_id==node_alt_edgelist_out[i2].to_node.node_id:
+                    node.edgelist_out[i1] = node.edgelist_out[i1]+node_alt_edgelist_out[i2]
+                    curr_edge = node.edgelist_out[i1]
+                    i1 += 1
+                    i2 += 1
+                elif node.edgelist_out[i1].to_node.node_id<node_alt_edgelist_out[i2].to_node.node_id:
+                    curr_edge = node.edgelist_out[i1]
+                    i1 += 1
+                elif node.edgelist_out[i1].to_node.node_id>node_alt_edgelist_out[i2].to_node.node_id:
+                    node.edgelist_out.append(node_alt_edgelist_out[i2])
+                    curr_edge = node.edgelist_out[-1]
+                    i2 += 1
+                    new_ktn.n_edges += 1
+                curr_edge.k = np.log(np.exp(curr_edge.k)/2.)
+                curr_edge.t *= 1./2.
+            if i1<n_out_edges:
+                for curr_edge in node.edgelist_out[i1:n_out_edges]:
+                    curr_edge.k = np.log(np.exp(curr_edge.k)/2.)
+                    curr_edge.t *= 1./2.
+            elif i2<len(node_alt_edgelist_out):
+                for curr_edge in node_alt_edgelist_out[i2:]:
+                    node.edgelist_out.append(curr_edge)
+                    new_ktn.n_edges += 1
+                    node.edgelist_out[-1].k = np.log(np.exp(node.edgelist_out[-1].k)/2.)
+                    node.edgelist_out[-1].t *= 1./2.
+            node.calc_k_esc_in()
+        return new_ktn
+
     def construct_ktn(self,comms,conns,pi,k,node_ens,ts_ens):
         if ((len(node_ens)!=self.n_nodes) or (len(ts_ens)!=self.n_edges) or (len(comms)!=self.n_nodes) \
             or (len(conns)!=self.n_edges) or (len(pi)!=self.n_nodes) \
@@ -329,20 +383,20 @@ class Ktn(object):
 
     ''' read (at least) node connectivity, stationary distribution and transition rates from files '''
     @staticmethod
-    def read_ktn_info(n_nodes,n_edges):
-        comms = Ktn.read_single_col("communities.dat",n_nodes)
-        conns = Ktn.read_double_col("ts_conns.dat",n_edges)
-        pi = Ktn.read_single_col("stat_prob.dat",n_nodes,fmt="float")
-        k = Ktn.read_single_col("ts_weights.dat",2*n_edges,fmt="float")
-        node_ens = Ktn.read_single_col("node_ens.dat",n_nodes,fmt="float") # optional
-        ts_ens = Ktn.read_single_col("ts_ens.dat",n_edges,fmt="float") # optional
+    def read_ktn_info(n_nodes,n_edges,ktn_id=""):
+        comms = Ktn.read_single_col("communities"+ktn_id+".dat",n_nodes)
+        conns = Ktn.read_double_col("ts_conns"+ktn_id+".dat",n_edges)
+        pi = Ktn.read_single_col("stat_prob"+ktn_id+".dat",n_nodes,fmt="float")
+        k = Ktn.read_single_col("ts_weights"+ktn_id+".dat",2*n_edges,fmt="float")
+        node_ens = Ktn.read_single_col("node_ens"+ktn_id+".dat",n_nodes,fmt="float") # optional
+        ts_ens = Ktn.read_single_col("ts_ens"+ktn_id+".dat",n_edges,fmt="float") # optional
         return comms, conns, pi, k, node_ens, ts_ens
 
     ''' read forward and backward committor functions from files and update Ktn data structure '''
-    def read_committors(self,nw_str="full"):
-        if not exists("qf."+nw_str+".dat") or not exists("qb."+nw_str+".dat"): raise RuntimeError
-        qf = Ktn.read_single_col("qf."+nw_str+".dat",self.n_nodes,fmt="float")
-        qb = Ktn.read_single_col("qb."+nw_str+".dat",self.n_nodes,fmt="float")
+    def read_committors(self,ktn_id=""):
+        if not exists("qf"+ktn_id+".dat") or not exists("qb"+ktn_id+".dat"): raise RuntimeError
+        qf = Ktn.read_single_col("qf"+ktn_id+".dat",self.n_nodes,fmt="float")
+        qb = Ktn.read_single_col("qb"+ktn_id+".dat",self.n_nodes,fmt="float")
         self.update_all_tpt_vals(qf,qb)
 
     ''' write the network to files in a format readable by Gephi '''
@@ -350,13 +404,16 @@ class Ktn(object):
         if exists("ktn_nodes."+fmt) or exists("ktn_edges."+fmt): raise RuntimeError
         ktn_nodes_f = open("ktn_nodes."+fmt,"w")
         ktn_edges_f = open("ktn_edges."+fmt,"w")
-        if fmt=="csv": ktn_nodes_f.write("Id,Label,Energy,Community,pi,evec,mr,qf,qb")
-        if fmt=="csv": ktn_edges_f.write("Source,Target,Weight,Type,Energy,k,t,j,f,fe")
+        if fmt=="csv":
+            ktn_nodes_f.write("Id,Label,Energy,Community,pi,mr,qf,qb,t,s,evec")
+            if isinstance(self,Coarse_ktn): ktn_nodes_f.write(",evec_err\n")
+            else: ktn_nodes_f.write("\n")
+            ktn_edges_f.write("Source,Target,Weight,Type,Energy,t,j,f,fe\n")
         if fmt=="csv":
             for node in self.nodelist:
                 ktn_nodes_f.write(str(node.node_id)+","+str(node.node_id)+","+str(node.node_en)+","+\
-                    str(node.comm_id)+","+str(node.pi)+","+str(node.mr)+","+str(node.qf)+","+str(node.qb)+\
-                    ","+str(node.evec[evec_idx]))
+                    str(node.comm_id)+","+str(np.exp(node.pi))+","+str(node.mr)+","+str(node.qf)+","+str(node.qb)+\
+                    ","+str(node.t)+","+str(node.s)+","+str(node.evec[evec_idx]))
                 if self.__class__.__name__ == "Coarse_ktn":
                     ktn_nodes_f.write(","+str(node.evec_err[evec_idx]))
                 ktn_nodes_f.write("\n")
@@ -364,11 +421,13 @@ class Ktn(object):
         if fmt=="csv" and mode==0: # directed edges (direction determined by net flux)
             for edge in self.edgelist:
                 if edge.deadts: continue
+                edge_type = "directed"
                 if mode==0 and edge.fe==0.: continue # directed edges, direction determined by net reactive flux
                 if mode==1 and edge.j<0.: continue # directed edges, direction determined by net flux
+                if mode==2: edge_type = "undirected" # print all edges, edges are undirected
                 ktn_edges_f.write(str(edge.from_node.node_id)+","+str(edge.to_node.node_id)+","+\
-                    str(edge.k)+","+str(edge.ts_en)+"directed,"+str(k)+","+str(t)+","+str(j)+","+\
-                    str(f)+","+str(fe)+"\n")
+                    str(np.exp(edge.k))+","+edge_type+","+str(edge.ts_en)+","+str(edge.t)+","+str(edge.j)+","+\
+                    str(edge.f)+","+str(edge.fe)+"\n")
         ktn_edges_f.close()
 
     @staticmethod
@@ -603,6 +662,8 @@ class Ktn(object):
                 exists("trans_probs."+nw_str+".dat")): raise RuntimeError
             if network.tau is not None:
                 trans_probs_f = open("trans_probs."+nw_str+".dat","w")
+                for node in network.nodelist:
+                    trans_probs_f.write("%i %i   %1.12f\n" % (node.node_id,node.node_id,node.t))
             if network.tpt_calc_done:
                 reac_flux_f = open("reactive_flux."+nw_str+".dat","w")
                 net_reac_flux_f = open("net_reactive_flux."+nw_str+".dat","w")
@@ -743,13 +804,25 @@ class Analyse_coarse_ktn(object):
             K_rev[i,i] = -np.sum(K_rev[i,:])
         return K_rev
 
-    ''' calculate the transition matrix by matrix exponential '''
-    def calc_t(self,tau):
+    ''' calculate the transition probability matrix by matrix exponential at a lag time tau. NB this transition
+        probability matrix is less sparse than the corresponding transition rate matrix. Therefore this method
+        can be used only when the Ktn data structure has edge entries for all (including unconnected) i-j pairs '''
+    @staticmethod
+    def calc_t(ktn,tau):
         pass
 
-    ''' calculate the linearised transition matrix '''
-    def calc_tlin(self,tau):
-        pass
+    ''' calculate the linearised transition probability matrix at a lag time tau. NB the linearised transition
+        matrix has non-zero and zero entries at the same indices as the transition rate matrix, so the Ktn
+        data structure can be updated directly. '''
+    @staticmethod
+    def calc_tlin(ktn,tau):
+        for node in ktn.nodelist:
+            assert tau < 1./np.exp(node.k_esc) # must hold to obtain a proper stochastic matrix
+            node.t = 1.-(tau*np.exp(node.k_esc))
+        for edge in ktn.edgelist:
+            if edge.deadts: continue
+            edge.t = tau*np.exp(edge.k)
+        ktn.tau = tau
 
     ''' calculate the k dominant eigenvalues and (normalised) eigenvectors of a sparse matrix by the
         implicitly restarted Arnoldi method (IRAM) '''
@@ -923,15 +996,54 @@ class Analyse_coarse_ktn(object):
            (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
         if ktn1.tau is None or ktn2.tau is None: # this analysis requires that transition probabilities have been calculated
             raise AttributeError
+        # quack
 
     ''' calculate the Jensen-Shannon divergence between two transition networks. The JS divergence is essentially a
         symmetrised equivalent of the KL divergence '''
     @staticmethod
-    def calc_js_div(ktn1,ktn2):
+    def calc_js_div(ktn1,ktn2,wts=[0.5,0.5]):
+        if not sum(wts)==1.: raise RuntimeError
         if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
            (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
-        if ktn1.tau is None or ktn2.tau is None: # this analysis requires that transition probabilities have been calculated
-            raise AttributeError
+        if ktn1.tau is None or ktn2.tau is None: raise AttributeError
+
+    ''' calculate the approximate JS divergence between two related transition networks by computing a weighted sum over
+        the surprisal values for each node. A node has high surprisal when the associated transition probabilities differ
+        greatly between the two TNs. Note that the two Ktn objects must have the same number of nodes '''
+    @staticmethod
+    def calc_surprisal(ktn1,ktn2,writedata=True):
+        if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
+           (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
+        if ktn1.tau is None or ktn2.tau is None: raise AttributeError
+        if ktn1.n_nodes != ktn2.n_nodes: raise AttributeError
+        ktn_comb = ktn1+ktn2
+        H_i_vals_1 = [Analyse_coarse_ktn.calc_entropy_rate_node(node) for node in ktn1.nodelist]
+        H_i_vals_2 = [Analyse_coarse_ktn.calc_entropy_rate_node(node) for node in ktn2.nodelist]
+        H_i_vals_comb = [Analyse_coarse_ktn.calc_entropy_rate_node(node) for node in ktn_comb.nodelist]
+        # calculate surprisal values
+        s_i_vals = [H_i_vals_comb[i]-\
+                    (np.exp(ktn1.nodelist[i].pi-np.log(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi)))*H_i_vals_1[i])-\
+                    (np.exp(ktn2.nodelist[i].pi-np.log(np.exp(ktn2.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi)))*H_i_vals_2[i])\
+                    for i in range(ktn1.n_nodes)]
+        pi_comb_vals = [(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi))/2. for i in range(ktn1.n_nodes)]
+        djs_approx_vals = [pi_comb_vals[i]*s_i_vals[i] for i in range(ktn1.n_nodes)]
+        # update Node's of ktn1 object with surprisal values
+        for i, node in enumerate(ktn1.nodelist): node.s = s_i_vals[i]
+        if not writedata: return
+        with open("surprisal.dat","w") as surprisal_f:
+            surprisal_f.write("# average stat prob      surprisal      approx. JS divergence\n")
+            surprisal_f.write("# total JS divergence: %1.12f\n" % sum(djs_approx_vals))
+            for i in range(ktn1.n_nodes):
+                surprisal_f.write("%1.12f    %1.12f    %1.12f\n" % (pi_comb_vals[i],s_i_vals[i],djs_approx_vals[i]))
+
+    ''' calculate the entropy rate for a node in a transition network '''
+    @staticmethod
+    def calc_entropy_rate_node(node):
+        if not isinstance(node,Node): raise RuntimeError
+        H = node.t*np.log(node.t) # entropy rate
+        for edge in node.edgelist_out:
+            H += edge.t*np.log(edge.t)
+        return H
 
     @staticmethod
     def eigs_K_to_T(g,tau):
@@ -966,7 +1078,7 @@ if __name__=="__main__":
     n_edges = int(argv[2])
     n_comms = int(argv[3])
     full_network = Ktn(n_nodes,n_edges,n_comms)
-    comms, conns, pi, k, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges)
+    comms, conns, pi, k, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id="_3h")
     full_network.construct_ktn(comms,conns,pi,k,node_ens,ts_ens)
 
     ### TEST KTN ###
@@ -1020,7 +1132,7 @@ if __name__=="__main__":
     # calculate committor functions by SLSQP constrained linear optimisation
 #    full_network.calc_committors(method="linopt")
     # read committor functions from files
-    full_network.read_committors("full")
+    full_network.read_committors("_3h")
 
     '''
     print "\n doing variational optimisation of coarse rate matrix:"
@@ -1033,9 +1145,19 @@ if __name__=="__main__":
     print "stationary probabilities of coarse nodes:\n", [np.exp(x.pi) for x in coarse_ktn.nodelist]
     '''
 
-    # get eigenvectors and dump information to files   
-#    coarse_ktn.get_eigvecs()
-#    coarse_ktn.write_nodes_info()
-#    coarse_ktn.write_edges_info()
-
     Analyse_coarse_ktn.isocommittor_cut_analysis(full_network,3)
+    Analyse_coarse_ktn.calc_tlin(full_network,2.E-1)
+
+    # create a second network and calculate relative entropy metrics between the two networks
+    network_2 = Ktn(n_nodes,n_edges,n_comms)
+    comms, conns, pi, k, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id="_3h_t01")
+    network_2.construct_ktn(comms,conns,pi,k,node_ens,ts_ens)
+    Analyse_coarse_ktn.calc_tlin(network_2,2.E-1)
+    Analyse_coarse_ktn.calc_surprisal(full_network,network_2)
+
+    # get eigenvectors and dump information to files   
+    coarse_ktn.get_eigvecs()
+    coarse_ktn.write_nodes_info()
+    coarse_ktn.write_edges_info()
+
+    full_network.print_gephi_fmt(evec_idx=0)
