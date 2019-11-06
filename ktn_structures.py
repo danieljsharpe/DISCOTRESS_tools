@@ -1,9 +1,5 @@
 '''
-Main Python script to estimate and analyse a coarse transition network
-Usage:
-python coarse_ktn_analysis.py <n_nodes> <n_edges> <n_comms>
-requires 6x input data files:
-communities.dat, stat_prob.dat, ts_conns.dat, ts_weights.dat, min.A, min.B
+Python script containing Node, Edge, Ktn and Coarse_ktn data structures
 
 Daniel J. Sharpe
 Sep 2019
@@ -11,12 +7,8 @@ Sep 2019
 
 import numpy as np
 from os.path import exists
-from sys import argv
 from copy import copy
-from scipy.sparse.linalg import eigs as eigs_iram
-from scipy.sparse import csr_matrix
-from scipy.linalg import expm
-from scipy import optimize # code is written for v0.17.0, also tested for v0.18.0
+from copy import deepcopy
 
 class Node(object):
 
@@ -315,12 +307,13 @@ class Ktn(object):
         of nodes. The Ktn has averaged Node stationary probabilities and Edge transition rates and probabilities '''
     def __add__(self,other_ktn):
         if self.n_nodes!=other_ktn.n_nodes: raise AttributeError
-        new_ktn = copy(self)
+        new_ktn = deepcopy(self)
         for i in range(new_ktn.n_nodes):
             node = new_ktn.nodelist[i]
             node_alt = other_ktn.nodelist[i]
             node.pi = np.log((np.exp(node.pi)+np.exp(node_alt.pi))/2.)
             node.t = (node.t+node_alt.t)/2.
+            print i, node.t, self.nodelist[i].t, node_alt.t, (node.t+node_alt.t)/2.
             n_out_edges = len(node.edgelist_out)
             node.edgelist_out = sorted(node.edgelist_out,key=lambda x: x.to_node.node_id)
             node_alt_edgelist_out = sorted(node_alt.edgelist_out,key=lambda x: x.to_node.node_id)
@@ -355,16 +348,20 @@ class Ktn(object):
             node.calc_k_esc_in()
         return new_ktn
 
-    def construct_ktn(self,comms,conns,pi,k,node_ens,ts_ens):
+    def construct_ktn(self,comms,conns,pi,k,t,node_ens,ts_ens):
         if ((len(node_ens)!=self.n_nodes) or (len(ts_ens)!=self.n_edges) or (len(comms)!=self.n_nodes) \
             or (len(conns)!=self.n_edges) or (len(pi)!=self.n_nodes) \
             or (len(k)!=2*self.n_edges)): raise AttributeError
+        if t[0]!=None: self.tau=0. # indicates that transition probabilities are set but lag time is unknown
         for i in range(self.n_nodes):
             if comms[i] > self.n_comms-1: raise AttributeError
             self.nodelist[i].node_attribs = [node_ens[i],comms[i],pi[i]]
+            self.nodelist[i].t = t[i]
         for i in range(self.n_edges):
             self.edgelist[2*i].edge_attribs = [ts_ens[i],k[2*i]]
+            self.edgelist[2*i].t = t[self.n_nodes+(2*i)]
             self.edgelist[(2*i)+1].edge_attribs = [ts_ens[i],k[(2*i)+1]]
+            self.edgelist[(2*i)+1].t = t[self.n_nodes+((2*i)+1)]
             # set edge connectivity
             self.edgelist[2*i].to_from_nodes = ([self.nodelist[conns[i][1]-1],self.nodelist[conns[i][0]-1]],True)
             self.edgelist[(2*i)+1].to_from_nodes = ([self.nodelist[conns[i][0]-1],self.nodelist[conns[i][1]-1]],False)
@@ -388,9 +385,10 @@ class Ktn(object):
         conns = Ktn.read_double_col("ts_conns"+ktn_id+".dat",n_edges)
         pi = Ktn.read_single_col("stat_prob"+ktn_id+".dat",n_nodes,fmt="float")
         k = Ktn.read_single_col("ts_weights"+ktn_id+".dat",2*n_edges,fmt="float")
+        t = Ktn.read_single_col("ts_probs"+ktn_id+".dat",n_nodes+(2*n_edges),fmt="float")
         node_ens = Ktn.read_single_col("node_ens"+ktn_id+".dat",n_nodes,fmt="float") # optional
         ts_ens = Ktn.read_single_col("ts_ens"+ktn_id+".dat",n_edges,fmt="float") # optional
-        return comms, conns, pi, k, node_ens, ts_ens
+        return comms, conns, pi, k, t, node_ens, ts_ens
 
     ''' read forward and backward committor functions from files and update Ktn data structure '''
     def read_committors(self,ktn_id=""):
@@ -494,22 +492,6 @@ class Ktn(object):
             tot_pi2 = np.log(np.exp(tot_pi2)+np.exp(self.nodelist[i].pi))
         assert abs(np.exp(tot_pi2)-1.) < 1.E-10
 
-    ''' calculate committor function by chosen method and update Ktn data structure accordingly, including
-        the calculation of TPT quantities for Node and Edge objects '''
-    def calc_committors(self,method="linopt"):
-        if method=="linopt":
-            calc_committors_func = self.calc_committors_linopt
-        elif method=="sor":
-            calc_committors_func = self.calc_committors_sor
-        else:
-            raise RuntimeError
-        qf = calc_committors_func(direction="f")
-        if not self.dbalance:
-            qb = calc_committors_func(direction="b")
-        else:
-            qb = np.array([1.-qf_i for qf_i in qf])
-        self.update_all_tpt_vals(qf,qb)
-
         ''' update committor function values in Node data structures, and set other TPT values in the Node's and
             Edge's of the Ktn data structure (eg reactive fluxes etc) '''
     def update_all_tpt_vals(self,qf,qb):
@@ -520,49 +502,6 @@ class Ktn(object):
             edge.flow_vals = 0
         self.tpt_calc_done = True
 
-    ''' calculate the committor functions by formulating a constrained linear optimisation problem '''
-    def calc_committors_linopt(self,direction="f",seed=21):
-        print "calculating committor functions by constrained linear optimisation..."
-        np.random.seed(seed)
-        if direction=="f": # calculate forward committor function (A<-B)
-            start_set, final_set = self.B, self.A
-            K = Analyse_coarse_ktn.setup_k_mtx(self)
-        elif direction=="b": # calculate backward committor function (B<-A)
-            start_set, final_set = self.A, self.B
-            K = Analyse_coarse_ktn.setup_k_rev_mtx(self)
-        else:
-            raise RuntimeError
-        q_constraints = [] # list of constraints. Each constraint is a dict.
-        # nodes of starting/final sets have committor probabilities equal to zero/unity, respectively
-        for node in start_set:
-            constraint_func = (lambda i: (lambda x: x[i-1]))(node.node_id)
-            q_constraints.append({"type": "eq", "fun": constraint_func})
-        for node in final_set:
-            constraint_func = (lambda i: (lambda x: x[i-1]-1.))(node.node_id)
-            q_constraints.append({"type": "eq", "fun": constraint_func})
-        # committor function satisfies 0 <= q_i <= 1 for all microstates i - can use these constraints in place
-        #   of "bounds" kw argument to optimize.minimize()
-#        q_constraints.append({"type": "ineq", "fun": lambda x: x[:]})
-#        q_constraints.append({"type": "ineq", "fun": lambda x: -x+1.})
-        # For all nodes not in A and B, the dot product of the committor vector with the corresponding row of
-        #   the transition rate matrix must be equal to zero
-        for node in self.nodelist:
-            if node in self.A or node in self.B: continue
-            constraint_func = (lambda i: (lambda x: np.dot(x,K[i-1,:])))(node.node_id)
-            q_constraints.append({"type": "eq", "fun": constraint_func})
-        x0 = np.random.rand(self.n_nodes)
-        conopt_func = lambda x: np.dot(np.dot(K,x),np.dot(K,x)) # cast problem as linear eqn of form Ax=0
-        q_res = optimize.minimize(conopt_func,x0=x0,method="SLSQP",bounds=[(0.,1.)]*self.n_nodes, \
-            tol=1.E-8,constraints=q_constraints, \
-            options={"maxiter": 500, "eps": 1.E-10, "ftol": 1.E-8, "iprint":3, "disp": True})
-        if not q_res.success: raise RuntimeError
-        q = q_res.x # vector of committor function values
-        return q
-
-    ''' calculate the committor functions by successive over-relaxation (SOR) '''
-    def calc_committors_sor(self,direction="f"):
-        pass
-
     def get_comm_stat_probs(self):
         self.comm_pi_vec = [-float("inf")]*self.n_comms
         for node in self.nodelist:
@@ -570,34 +509,6 @@ class Ktn(object):
                 np.exp(node.pi))
             self.comm_sz_vec[node.comm_id] += 1
         assert abs(sum([np.exp(comm_pi) for comm_pi in self.comm_pi_vec])-1.) < 1.E-10
-
-    ''' calculate the eigenvectors of the transition matrix and update this information in the data structure. If
-        this function is called from a Coarse_ktn object, then both the coarse and parent KTN objects are updated '''
-    def get_eigvecs(self):
-        full_network, coarse_network = self, None
-        n_nodes, n_comms = None, None # no. of nodes and of communities of full ktn, respectively
-        if self.__class__.__name__=="Coarse_ktn":
-            n_nodes, n_comms = self.parent_ktn.n_nodes, self.n_nodes
-            coarse_network = self
-            full_network = self.parent_ktn
-        else:
-            n_nodes, n_comms = self.n_nodes, self.n_comms
-        K_sp_full = Analyse_coarse_ktn.setup_sp_k_mtx(full_network)
-        eigvecs_full = Analyse_coarse_ktn.calc_eig_iram(K_sp_full,n_comms)[1]
-        for i in range(n_nodes):
-            node = full_network.nodelist[i]
-            node.evec = [0.]*n_comms
-            for j in range(n_comms):
-                node.evec[j] = eigvecs_full[j,i]
-        if coarse_network is None: return
-        K_sp_coarse = Analyse_coarse_ktn.setup_k_mtx(coarse_network)
-        eigvecs_coarse = Analyse_coarse_ktn.calc_eig_all(K_sp_coarse,n_comms)[1]
-        for i in range(n_comms):
-            node = coarse_network.nodelist[i]
-            node.evec = [0.]*n_comms
-            for j in range(n_comms):
-                node.evec[j] = eigvecs_coarse[j,i]
-        coarse_network.get_evec_errors(full_network.n_comms)
 
     def construct_coarse_ktn(self):
         coarse_ktn = Coarse_ktn(self)
@@ -743,421 +654,3 @@ class Coarse_ktn(Ktn):
             for j in range(n):
                 node.evec_err[j] = abs(node.evec[j]-(self.nodelist[node.comm_id].evec[j] \
                                        /float(self.parent_ktn.comm_sz_vec[node.comm_id])))
-
-class Analyse_coarse_ktn(object):
-
-    def __init__(self):
-        pass
-
-    ''' set up the transition rate matrix in CSR sparse format '''
-    @staticmethod
-    def setup_sp_k_mtx(ktn):
-        if not isinstance(ktn,Ktn) and not isinstance(ktn,Coarse_ktn): raise RuntimeError
-        K_row_idx, K_col_idx = [], [] # NB K[K_row_idx[i],K_col_idx[i]] = data[i]
-        K_data = []
-        # define lambda function to append an element
-        append_csr_elem = lambda row_idx, col_idx, elem, row_vec=K_row_idx, col_vec=K_col_idx, data_vec=K_data: \
-            (row_vec.append(row_idx), col_vec.append(col_idx), data_vec.append(elem))
-        nnz = 0 # count number of non-zero elements
-        for i, node in enumerate(ktn.nodelist):
-            sum_elems = 0.
-            diag_elem_idx = None # index of diagonal element in list
-            if not node.edgelist_out:
-                append_csr_elem(i,i,0.)
-            for edge in node.edgelist_out:
-                if diag_elem_idx is not None and edge.to_node.node_id-1 > i: # need to add an entry that is the diag elem
-                    diag_elem_idx = nnz
-                    append_csr_elem(i,i,-np.exp(node.k_esc))
-                    nnz += 1
-                    continue
-                if edge.deadts: continue
-                append_csr_elem(i,edge.to_node.node_id-1,np.exp(edge.k))
-                nnz += 1
-            if diag_elem_idx is None:
-                append_csr_elem(i,i,-np.exp(node.k_esc))
-                nnz += 1
-        K_sp = csr_matrix((K_data,(K_row_idx,K_col_idx)),shape=(ktn.n_nodes,ktn.n_nodes),dtype=float)
-        return K_sp
-
-    ''' set up the transition rate matrix (not sparse) '''
-    @staticmethod
-    def setup_k_mtx(ktn):
-        K = np.zeros((ktn.n_nodes,ktn.n_nodes),dtype=float)
-        for edge in ktn.edgelist:
-            if edge.deadts: continue
-            K[edge.from_node.node_id-1,edge.to_node.node_id-1] = np.exp(edge.k)
-        for node in ktn.nodelist:
-            K[node.node_id-1,node.node_id-1] = -np.exp(node.k_esc)
-        for i in range(ktn.n_nodes):
-            assert abs(np.sum(K[i,:])) < 1.E-10
-        return K
-
-    ''' set up the reverse transition rate matrix (not sparse) '''
-    @staticmethod
-    def setup_k_rev_mtx(ktn):
-        K_rev = np.zeros((ktn.n_nodes,ktn.n_nodes),dtype=float)
-        for edge in ktn.edgelist:
-            if edge.deadts: continue
-            K_rev[edge.to_node.node_id-1,edge.from_node.node_id-1] = np.exp(edge.from_node.pi-\
-                edge.to_node.pi+edge.k)
-        for i in range(ktn.n_nodes):
-            K_rev[i,i] = -np.sum(K_rev[i,:])
-        return K_rev
-
-    ''' calculate the transition probability matrix by matrix exponential at a lag time tau. NB this transition
-        probability matrix is less sparse than the corresponding transition rate matrix. Therefore this method
-        can be used only when the Ktn data structure has edge entries for all (including unconnected) i-j pairs '''
-    @staticmethod
-    def calc_t(ktn,tau):
-        pass
-
-    ''' calculate the linearised transition probability matrix at a lag time tau. NB the linearised transition
-        matrix has non-zero and zero entries at the same indices as the transition rate matrix, so the Ktn
-        data structure can be updated directly. '''
-    @staticmethod
-    def calc_tlin(ktn,tau):
-        for node in ktn.nodelist:
-            assert tau < 1./np.exp(node.k_esc) # must hold to obtain a proper stochastic matrix
-            node.t = 1.-(tau*np.exp(node.k_esc))
-        for edge in ktn.edgelist:
-            if edge.deadts: continue
-            edge.t = tau*np.exp(edge.k)
-        ktn.tau = tau
-
-    ''' calculate the k dominant eigenvalues and (normalised) eigenvectors of a sparse matrix by the
-        implicitly restarted Arnoldi method (IRAM) '''
-    @staticmethod
-    def calc_eig_iram(M,k,which_eigs="SM"):
-        M_eigs, M_evecs = eigs_iram(M,k,which=which_eigs)
-        M_eigs, M_evecs = Analyse_coarse_ktn.sort_eigs(M_eigs,M_evecs)
-        M_evecs = np.array([Analyse_coarse_ktn.normalise_vec(M_evec) for M_evec in M_evecs])
-        return M_eigs, M_evecs
-
-    @staticmethod
-    def calc_eig_all(M,k=None):
-        M_eigs, M_evecs = np.linalg.eig(M)
-        M_eigs, M_evecs = Analyse_coarse_ktn.sort_eigs(M_eigs,M_evecs)
-        if k is not None: M_eigs, M_evecs = M_eigs[:k+1], M_evecs[:k+1]
-        M_evecs = np.array([Analyse_coarse_ktn.normalise_vec(M_evec) for M_evec in M_evecs])
-        return M_eigs, M_evecs
-
-    @staticmethod
-    def sort_eigs(eigs,evecs):
-        evecs = np.transpose(evecs)
-        evecs = np.array([evec for _,evec in sorted(zip(list(eigs),list(evecs)),key=lambda pair: pair[0], \
-            reverse=True)],dtype=float)
-        eigs = np.array(sorted(list(eigs),reverse=True),dtype=float)
-        return eigs, evecs
-
-    @staticmethod
-    def normalise_vec(vec):
-        sumvec = np.sum([abs(x) for x in vec])
-        vec *= 1./sumvec
-        return vec
-
-    ''' function to perform variational optimisation of the second dominant eigenvalue of
-        the transition rate (and therefore of the transition) matrix, by perturbing the
-        assigned communities and using a simulated annealing procedure '''
-    def varopt_simann(self,coarse_ktn,nsteps,seed=21):
-        np.random.seed(seed)
-        K_C = self.setup_k_mtx(coarse_ktn)
-        K_C_copy = None
-        K_C_eigs, K_C_evecs = Analyse_coarse_ktn.calc_eig_all(K_C)
-        lambda2_prev = K_C_eigs[1]
-        niter=0
-        while (niter<nsteps):
-            K_C_copy = copy(K_C)
-            nodes_to_update = [0]*coarse_ktn.n_nodes # mask of coarse_ktn nodes whose escape times need updating
-            # find an inter-community edge
-            found_edge, edge = False, None
-            while not found_edge:
-                edge_id = np.random.randint(1,2*coarse_ktn.parent_ktn.n_edges+1)
-                edge = coarse_ktn.parent_ktn.edgelist[edge_id-1]
-                if edge.deadts: continue
-                if edge.from_node.comm_id!=edge.to_node.comm_id: found_edge = True
-            nodes_to_update[edge.from_node.comm_id] = 1
-            nodes_to_update[edge.to_node.comm_id] = 1
-            # swap the community of a single boundary node
-            pick_node = np.random.random_integers(0,1)
-            if pick_node==1: edge = edge.rev_edge
-            old_from_comm = edge.from_node.comm_id
-            edge.from_node.comm_id = edge.to_node.comm_id
-            old_from_comm_pi_prev = coarse_ktn.nodelist[old_from_comm].pi
-            old_to_comm_pi_prev = coarse_ktn.nodelist[edge.from_node.comm_id].pi
-            for fn_edge in edge.from_node.edgelist_out: # scan neighbours FROM edge.from_node
-                if fn_edge.deadts: continue
-                nodes_to_update[fn_edge.to_node.comm_id] = 1
-                # transition is a new inter-community edge / inter-community edge now connects this different pair
-                if fn_edge.to_node.comm_id!=edge.from_node.comm_id:
-                    K_C[edge.from_node.comm_id,fn_edge.to_node.comm_id] += np.exp(edge.from_node.pi-\
-                        coarse_ktn.nodelist[edge.from_node.comm_id].pi+fn_edge.k)
-                    K_C[fn_edge.to_node.comm_id,edge.from_node.comm_id] += np.exp(fn_edge.to_node.pi-\
-                        coarse_ktn.nodelist[fn_edge.to_node.comm_id].pi+fn_edge.rev_edge.k)
-                # transition is no longer an inter-community edge / inter-community edge now connects a different pair
-                if fn_edge.to_node.comm_id!=old_from_comm:
-                    K_C[old_from_comm,fn_edge.to_node.comm_id] -= \
-                        np.exp(edge.from_node.pi-coarse_ktn.nodelist[old_from_comm].pi+fn_edge.k)
-                    K_C[fn_edge.to_node.comm_id,old_from_comm] -= \
-                        np.exp(fn_edge.to_node.pi-coarse_ktn.nodelist[fn_edge.to_node.comm_id].pi+fn_edge.rev_edge.k)
-            # update the stationary probabilities of nodes [communities] of the Coarse_ktn object
-            coarse_ktn.nodelist[old_from_comm].pi = np.log(np.exp(coarse_ktn.nodelist[old_from_comm].pi)-\
-                np.exp(edge.from_node.pi))
-            coarse_ktn.nodelist[edge.from_node.comm_id].pi = np.log(np.exp(\
-                coarse_ktn.nodelist[edge.from_node.comm_id].pi)+np.exp(edge.from_node.pi))
-            # account for the population changes of the two perturbed communities in the inter-community rates
-            K_C[old_from_comm,:] *= np.exp(old_from_comm_pi_prev-coarse_ktn.nodelist[old_from_comm].pi)
-            K_C[edge.from_node.comm_id,:] *= np.exp(old_to_comm_pi_prev-coarse_ktn.nodelist[edge.from_node.comm_id].pi)
-            # update the escape times of communities
-            gen = (node for i, node in enumerate(coarse_ktn.nodelist) if nodes_to_update[i])
-            for node in gen:
-                K_C[node.node_id-1,node.node_id-1] = 0.
-                K_C[node.node_id-1,node.node_id-1] = -np.sum(K_C[node.node_id-1,:])
-            K_C_eigs, K_C_evecs = Analyse_coarse_ktn.calc_eig_all(K_C)
-            if lambda2_prev < K_C_eigs[1]: # second dominant eigenvalue of rate matrix has increased, accept move
-                print "accepting step %i: %f -> %f" % (niter+1,lambda2_prev,K_C_eigs[1])
-                lambda2_prev = K_C_eigs[1]
-                # update the escape rates and transition rates in the Coarse_ktn data structure
-                # NB also need to add/subtract the new edges to the inter-community transition rate in the data structure!
-                for out_edge in coarse_ktn.nodelist[old_from_comm].edgelist_out:
-                    if out_edge.deadts: continue
-                    out_edge.k = np.log(np.exp(out_edge.k)*np.exp(\
-                                 old_from_comm_pi_prev-coarse_ktn.nodelist[old_from_comm].pi))
-                for out_edge in coarse_ktn.nodelist[edge.from_node.comm_id].edgelist_out:
-                    if out_edge.deadts: continue
-                    out_edge.k = np.log(np.exp(out_edge.k)*np.exp(\
-                                 old_to_comm_pi_prev-coarse_ktn.nodelist[edge.from_node.comm_id].pi))
-                coarse_ktn.nodelist[old_from_comm].calc_k_esc_in(mode=1)
-                coarse_ktn.nodelist[edge.from_node.comm_id].calc_k_esc_in(mode=1)
-                coarse_ktn.parent_ktn.comm_sz_vec[old_from_comm] -= 1
-                coarse_ktn.parent_ktn.comm_sz_vec[edge.from_node.comm_id] += 1
-            else: # reject move
-                K_C = copy(K_C_copy)
-                coarse_ktn.nodelist[old_from_comm].pi = old_from_comm_pi_prev
-                coarse_ktn.nodelist[edge.from_node.comm_id].pi = old_to_comm_pi_prev
-                edge.from_node.comm_id = old_from_comm
-            niter += 1
-        # update the stationary probability vector of communities in the Ktn object
-        # quack
-        return K_C
-
-    ''' perform an analysis of the series of isocommittor cuts on a KTN. The isocommittor cuts are defined at intervals of
-        1/(ncuts+1). ncuts=1 calculates the TSE only '''
-    @staticmethod
-    def isocommittor_cut_analysis(ktn,ncuts=1,dircn="f",writedata=True):
-        if not isinstance(ktn,Ktn) and not isistance(ktn,Coarse_ktn): raise RuntimeError
-        if not ktn.tpt_calc_done: raise AttributeError # need committor functions and other TPT values for this analysis
-        incmt=1./float(ncuts+1)
-        alpha_vals = [0.+(incmt*float(i)) for i in range(1,ncuts+1)]
-        cut_edges_all = [[] for i in range(ncuts)]
-        for i, alpha_val in enumerate(alpha_vals):
-            cut_edges = Analyse_coarse_ktn.get_isocommittor_cut(ktn,alpha_val,dircn=dircn)
-            cut_edges_all[i] = cut_edges
-            if not writedata: continue
-            with open("cut_flux.alpha"+str(alpha_val)+".dat","w") as cut_flux_f:
-                cut_flux_f.write("# cumulative flux      cumulative relative flux      alpha=%f\n" % alpha_val)
-                for j, cut_edge in enumerate(cut_edges_all[i]):
-                    cut_flux_f.write("%i    %1.12f    %1.12f\n" % (j,cut_edge[1],cut_edge[2]))
-
-    ''' retrieve the set of edges that form the isocommittor cut defined by a committor function value equal to alpha.
-        alpha=0.5 defines the transition state ensemble (TSE) '''
-    @staticmethod
-    def get_isocommittor_cut(ktn,alpha,dircn="f"):
-        if not isinstance(ktn,Ktn) and not isistance(ktn,Coarse_ktn): raise RuntimeError
-        if alpha<=0. or alpha>=1.: raise RuntimeError
-        if not ktn.tpt_calc_done: raise AttributeError # need committor functions and other TPT values for this analysis
-        J = 0. # reactive A-B flux
-        cut_edges = [] # list of edges that constitute the isocommittor cut in format (edge,J_ij,rel J_ij)
-        for edge in ktn.edgelist:
-            if edge.deadts: continue
-            edge_in_cut = None
-            if dircn=="f" and edge.to_node.qf>alpha and edge.from_node.qf<alpha:
-                edge_in_cut = edge
-                comm_diff = edge_in_cut.to_node.qf-edge_in_cut.from_node.qf # difference in committors across edge of cut
-            elif dircn=="b" and edge.from_node.qb>alpha and edge.to_node.qb<alpha:
-                edge_in_cut = edge.rev_edge
-                comm_diff = edge_in_cut.to_node.qb-edge_in_cut.from_node.qb
-            if edge_in_cut is None: continue
-            J_ij = np.exp(edge_in_cut.k+edge_in_cut.from_node.pi)*comm_diff
-            cut_edges.append([edge_in_cut,J_ij,J_ij])
-            J += J_ij
-        for cut_edge in cut_edges: cut_edge[2] *= 1./J
-        cut_edges = sorted(cut_edges,key=lambda x: x[2],reverse=True)
-        for i in range(1,len(cut_edges)):
-            cut_edges[i][1] += cut_edges[i-1][1]
-            cut_edges[i][2] += cut_edges[i-1][2]
-        return cut_edges
-
-    ''' calculate the Kullback-Liebler divergence between two transition networks. This relative entropy measure
-        quantifies the difference in transition probability distributions between two transition probability matrices.
-        NB the KL divergence is asymmetric '''
-    @staticmethod
-    def calc_kl_div(ktn1,ktn2):
-        if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
-           (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
-        if ktn1.tau is None or ktn2.tau is None: # this analysis requires that transition probabilities have been calculated
-            raise AttributeError
-        # quack
-
-    ''' calculate the Jensen-Shannon divergence between two transition networks. The JS divergence is essentially a
-        symmetrised equivalent of the KL divergence '''
-    @staticmethod
-    def calc_js_div(ktn1,ktn2,wts=[0.5,0.5]):
-        if not sum(wts)==1.: raise RuntimeError
-        if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
-           (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
-        if ktn1.tau is None or ktn2.tau is None: raise AttributeError
-
-    ''' calculate the approximate JS divergence between two related transition networks by computing a weighted sum over
-        the surprisal values for each node. A node has high surprisal when the associated transition probabilities differ
-        greatly between the two TNs. Note that the two Ktn objects must have the same number of nodes '''
-    @staticmethod
-    def calc_surprisal(ktn1,ktn2,writedata=True):
-        if (not isinstance(ktn1,Ktn) and not isinstance(ktn1,Coarse_ktn)) or \
-           (not isinstance(ktn2,Ktn) and not isinstance(ktn2,Coarse_ktn)): raise RuntimeError
-        if ktn1.tau is None or ktn2.tau is None: raise AttributeError
-        if ktn1.n_nodes != ktn2.n_nodes: raise AttributeError
-        ktn_comb = ktn1+ktn2
-        H_i_vals_1 = [Analyse_coarse_ktn.calc_entropy_rate_node(node) for node in ktn1.nodelist]
-        H_i_vals_2 = [Analyse_coarse_ktn.calc_entropy_rate_node(node) for node in ktn2.nodelist]
-        H_i_vals_comb = [Analyse_coarse_ktn.calc_entropy_rate_node(node) for node in ktn_comb.nodelist]
-        # calculate surprisal values
-        s_i_vals = [H_i_vals_comb[i]-\
-                    (np.exp(ktn1.nodelist[i].pi-np.log(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi)))*H_i_vals_1[i])-\
-                    (np.exp(ktn2.nodelist[i].pi-np.log(np.exp(ktn2.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi)))*H_i_vals_2[i])\
-                    for i in range(ktn1.n_nodes)]
-        pi_comb_vals = [(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi))/2. for i in range(ktn1.n_nodes)]
-        djs_approx_vals = [pi_comb_vals[i]*s_i_vals[i] for i in range(ktn1.n_nodes)]
-        # update Node's of ktn1 object with surprisal values
-        for i, node in enumerate(ktn1.nodelist): node.s = s_i_vals[i]
-        if not writedata: return
-        with open("surprisal.dat","w") as surprisal_f:
-            surprisal_f.write("# average stat prob      surprisal      approx. JS divergence\n")
-            surprisal_f.write("# total JS divergence: %1.12f\n" % sum(djs_approx_vals))
-            for i in range(ktn1.n_nodes):
-                surprisal_f.write("%1.12f    %1.12f    %1.12f\n" % (pi_comb_vals[i],s_i_vals[i],djs_approx_vals[i]))
-
-    ''' calculate the entropy rate for a node in a transition network '''
-    @staticmethod
-    def calc_entropy_rate_node(node):
-        if not isinstance(node,Node): raise RuntimeError
-        H = node.t*np.log(node.t) # entropy rate
-        for edge in node.edgelist_out:
-            H += edge.t*np.log(edge.t)
-        return H
-
-    @staticmethod
-    def eigs_K_to_T(g,tau):
-        return np.exp(g*tau)
-
-if __name__=="__main__":
-
-    ### TESTS ###
-    mynode1 = Node(1)
-    mynode1.node_attribs = [-0.2,1,0.45]
-    mynode1.tpt_vals = [0.3,0.7]
-    mynode2 = Node(6)
-    mynode2.node_attribs = [-0.4,2,0.30]
-    myedge1 = Edge(5,5)
-    myedge1.to_from_nodes = ([mynode1,mynode2],True)
-    mynode1.node_id = 2
-    print "edge #1 to/from:", myedge1.to_from_nodes
-    print "ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
-    print repr(mynode1), "\n", str(mynode1)
-    del mynode1.node_attribs
-    print "forward committor for node 1 has now been deleted. qf:", mynode1.qf
-
-    mynode3 = Node(3)
-    mynode3.node_attribs = [-0.5,4,0.25]
-    myedge2 = Edge(8,8)
-    myedge2.to_from_nodes = ([mynode1,mynode3],True)
-    del myedge1.to_from_nodes
-    print "new ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
-
-    ### MAIN ###
-    n_nodes = int(argv[1])
-    n_edges = int(argv[2])
-    n_comms = int(argv[3])
-    full_network = Ktn(n_nodes,n_edges,n_comms)
-    comms, conns, pi, k, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id="_3h")
-    full_network.construct_ktn(comms,conns,pi,k,node_ens,ts_ens)
-
-    ### TEST KTN ###
-    '''
-    print "\n\n\n"
-    print "nbrlist for node 333: ", full_network.nodelist[332].nbrlist
-    print "edgelist_in for node 333: ", full_network.nodelist[332].edgelist_in
-    print "edgelist_out for node 333: ", full_network.nodelist[332].edgelist_out
-    print "stationary probabilities of communities:\n", [np.exp(x) for x in full_network.comm_pi_vec]
-    print "out edges for node 1:", len(full_network.nodelist[0].edgelist_out)
-    '''
-
-    print "\ndominant eigenvalues of transition rate matrix:"
-    analyser = Analyse_coarse_ktn()
-    K_sp = Analyse_coarse_ktn.setup_sp_k_mtx(full_network)
-    K_sp_eigs, K_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_sp,7)
-    print K_sp_eigs
-    
-    tau = 1.E+1
-    print "\n eigenvalues of transition matrix, lag time:", tau
-    print [Analyse_coarse_ktn.eigs_K_to_T(g,tau) for g in K_sp_eigs]
-
-    print "\n characteristic timescales of full matrix:"
-    print [1./eig for eig in K_sp_eigs]
-
-    print "\nforming the coarse matrix:"
-    coarse_ktn = full_network.construct_coarse_ktn()
-    print "endpoint macrostates:"
-    print "A:", coarse_ktn.A, "B:", coarse_ktn.B
-    '''
-    print "no. of nodes:", coarse_ktn.n_nodes
-    print "nodelist:", coarse_ktn.nodelist
-    print "edgelist:", coarse_ktn.edgelist
-    print "nbrlist for comm 2: ", coarse_ktn.nodelist[2].nbrlist # need to except dead TSs
-    print "edgelist_in for comm 2: ", coarse_ktn.nodelist[2].edgelist_in # ditto
-    print "edgelist_out for comm 2: ", coarse_ktn.nodelist[2].edgelist_out # ditto
-    '''
-    print "stationary probabilities of coarse nodes:\n", [np.exp(x.pi) for x in coarse_ktn.nodelist]
-
-    print "\neigenvalues of coarse matrix (sparse):"
-    K_C_sp = Analyse_coarse_ktn.setup_sp_k_mtx(coarse_ktn)
-    K_C_sp_eigs, K_C_sp_evecs = Analyse_coarse_ktn.calc_eig_iram(K_C_sp,3)
-    print K_C_sp_eigs
-    print "\neigenvalues of coarse matrix (not sparse):"
-    K_C = Analyse_coarse_ktn.setup_k_mtx(coarse_ktn)
-    K_C_eigs, K_C_evecs = Analyse_coarse_ktn.calc_eig_all(K_C)
-    print K_C_eigs
-    print "\ncoarse transition rate matrix:"
-    print K_C
-
-    # calculate committor functions by SLSQP constrained linear optimisation
-#    full_network.calc_committors(method="linopt")
-    # read committor functions from files
-    full_network.read_committors("_3h")
-
-    '''
-    print "\n doing variational optimisation of coarse rate matrix:"
-    K_C_opt = analyser.varopt_simann(coarse_ktn,5000)
-    print "\neigenvalues of coarse matrix (after var opt procedure):"
-    K_C_opt_eigs, K_C_opt_evecs = Analyse_coarse_ktn.calc_eig_all(K_C_opt)
-    print K_C_opt_eigs
-    print "\n characteristic timescales of coarse matrix:"
-    print [1./eig for eig in K_C_opt_eigs]
-    print "stationary probabilities of coarse nodes:\n", [np.exp(x.pi) for x in coarse_ktn.nodelist]
-    '''
-
-    Analyse_coarse_ktn.isocommittor_cut_analysis(full_network,3)
-    Analyse_coarse_ktn.calc_tlin(full_network,2.E-1)
-
-    # create a second network and calculate relative entropy metrics between the two networks
-    network_2 = Ktn(n_nodes,n_edges,n_comms)
-    comms, conns, pi, k, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id="_3h_t01")
-    network_2.construct_ktn(comms,conns,pi,k,node_ens,ts_ens)
-    Analyse_coarse_ktn.calc_tlin(network_2,2.E-1)
-    Analyse_coarse_ktn.calc_surprisal(full_network,network_2)
-
-    # get eigenvectors and dump information to files   
-    coarse_ktn.get_eigvecs()
-    coarse_ktn.write_nodes_info()
-    coarse_ktn.write_edges_info()
-
-    full_network.print_gephi_fmt(evec_idx=0)
