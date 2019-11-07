@@ -50,8 +50,10 @@ if __name__=="__main__":
     n_nodes = int(argv[1])
     n_edges = int(argv[2])
     n_comms = int(argv[3])
-    full_network = Ktn(n_nodes,n_edges,n_comms)
-    comms, conns, pi, k, t, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id="_3h")
+    ktn_id = str(argv[4])
+    assert ktn_id[0]=="_" # leading character of ktn_id should be underscore
+    full_network = Ktn(n_nodes,n_edges,n_comms,ktn_id)
+    comms, conns, pi, k, t, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id)
     full_network.construct_ktn(comms,conns,pi,k,t,node_ens,ts_ens)
 
     '''
@@ -79,11 +81,11 @@ if __name__=="__main__":
     print [1./eig for eig in K_sp_eigs]
     '''
 
-#    '''
+    '''
     ### SET UP COARSE NETWORK ###
     print "\nforming the coarse matrix:"
     coarse_ktn = full_network.construct_coarse_ktn()
-#    '''
+    '''
 
     '''
     ### TEST COARSE NETWORK ###
@@ -114,7 +116,7 @@ if __name__=="__main__":
     # calculate committor functions by SLSQP constrained linear optimisation
 #    Analyse_ktn.calc_committors(full_network,method="linopt")
     # OR read committor functions from files
-    full_network.read_committors("_3h")
+#    full_network.read_committors()
 
     '''
     ### ESTIMATE COARSE NETWORK BY VARIATIONAL OPTIMISATION ###

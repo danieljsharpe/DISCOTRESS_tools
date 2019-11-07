@@ -287,7 +287,7 @@ class Edge(object):
 
 class Ktn(object):
 
-    def __init__(self,n_nodes,n_edges,n_comms):
+    def __init__(self,n_nodes,n_edges,n_comms,ktn_id):
         self.n_nodes = n_nodes    # number of nodes
         self.n_edges = n_edges    # number of bidirectional edges
         self.n_comms = n_comms    # number of communities into which nodes are partitioned
@@ -299,6 +299,7 @@ class Ktn(object):
         self.tpt_calc_done = False # flag to indicate if (all) TPT values have been calculated for nodes and edges
         self.tau = None           # lag time at which properties (eg characteristic timescales, transition probability
                                   # matrix, etc.) of the Ktn have been calculated
+        self.ktn_id = ktn_id      # label identifying ktn (leading character should be "_")
         if not isinstance(self,Coarse_ktn): # do not do this for Coarse_ktn class
             self.comm_pi_vec = [-float("inf")]*self.n_comms # (log) stationary probabilities of communities
             self.comm_sz_vec = [0]*self.n_comms # number of nodes in each community
@@ -367,8 +368,8 @@ class Ktn(object):
             self.edgelist[(2*i)+1].to_from_nodes = ([self.nodelist[conns[i][0]-1],self.nodelist[conns[i][1]-1]],False)
             self.edgelist[2*i].rev_edge = self.edgelist[(2*i)+1]
             self.edgelist[(2*i)+1].rev_edge = self.edgelist[2*i]
-        endset_A_list = [self.nodelist[i-1] for i in Ktn.read_endpoints(endset_name="A")]
-        endset_B_list = [self.nodelist[i-1] for i in Ktn.read_endpoints(endset_name="B")]
+        endset_A_list = [self.nodelist[i-1] for i in Ktn.read_endpoints(self.ktn_id,endset_name="A")]
+        endset_B_list = [self.nodelist[i-1] for i in Ktn.read_endpoints(self.ktn_id,endset_name="B")]
         self.A.update(endset_A_list)
         self.B.update(endset_B_list)
         self.renormalise_pi(mode=0) # check node stationary probabilities are normalised
@@ -391,10 +392,10 @@ class Ktn(object):
         return comms, conns, pi, k, t, node_ens, ts_ens
 
     ''' read forward and backward committor functions from files and update Ktn data structure '''
-    def read_committors(self,ktn_id=""):
-        if not exists("qf"+ktn_id+".dat") or not exists("qb"+ktn_id+".dat"): raise RuntimeError
-        qf = Ktn.read_single_col("qf"+ktn_id+".dat",self.n_nodes,fmt="float")
-        qb = Ktn.read_single_col("qb"+ktn_id+".dat",self.n_nodes,fmt="float")
+    def read_committors(self):
+        if not exists("qf"+self.ktn_id.strip("_")+".dat") or not exists("qb"+self.ktn_id.strip("_")+".dat"): raise RuntimeError
+        qf = Ktn.read_single_col("qf"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="float")
+        qb = Ktn.read_single_col("qb"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="float")
         self.update_all_tpt_vals(qf,qb)
 
     ''' write the network to files in a format readable by Gephi '''
@@ -450,8 +451,8 @@ class Ktn(object):
         return data
 
     @staticmethod
-    def read_endpoints(endset_name="A"):
-        endset_fname = "min."+endset_name
+    def read_endpoints(ktn_id,endset_name="A"):
+        endset_fname = "min."+endset_name+"."+ktn_id.strip("_")
         if not exists(endset_fname): raise RuntimeError
         endset_f = open(endset_fname,"r")
         endset = [int(line) for line in endset_f.readlines()[1:]]
@@ -595,7 +596,7 @@ class Coarse_ktn(Ktn):
 
     def __init__(self,parent_ktn):
         if parent_ktn.__class__.__name__ != self.__class__.__bases__[0].__name__: raise AttributeError
-        super(Coarse_ktn,self).__init__(parent_ktn.n_comms,parent_ktn.n_comms*(parent_ktn.n_comms-1)/2,None)
+        super(Coarse_ktn,self).__init__(parent_ktn.n_comms,parent_ktn.n_comms*(parent_ktn.n_comms-1)/2,None,parent_ktn.ktn_id+"coarse")
         self.parent_ktn = parent_ktn
         self.construct_coarse_ktn
 
