@@ -47,9 +47,13 @@ def setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Theta_mtxs):
     tau[B_node.node_id-1] = 1. # initial distribution - there is only a single initial state
     eta[B_node.node_id-1] = 1.
     # transfer matrices
-    binomial_coeff = lambda n, k: factorial(n)/(factorial(k)*factorial(n-k))
+    binomial_coeff = lambda n, k: float(factorial(n))/float((factorial(k)*factorial(n-k)))
     QTheta_mtxs = [Q.dot(Theta_mtxs[i]) for i in range(nmax+1)]
-    print "QTheta_mtxs:\n", QTheta_mtxs
+
+    print "\nQTheta_mtxs:\n", QTheta_mtxs
+    for i in range(nmax+1):
+        print "\nQTheta", i, "\n", QTheta_mtxs[i].toarray()
+
     for i in range(nmax+1): # block rows
         for j in range(i+1): # block columns, matrices being built are lower triangular
 #            print "forming block", i, j, "of transfer matrix K"
@@ -59,7 +63,6 @@ def setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Theta_mtxs):
 #                print "    appending elem..."
                 K_list.append_csr_elem((i*ktn.n_nodes)+row_idx,(j*ktn.n_nodes)+col_idx, \
                     binomial_coeff(i,i-j)*elem)
-                
     # final sum matrix
     final_vec = sorted([node.node_id-1 for node in ktn.A])
     for i in range(nmax+1):
@@ -68,6 +71,8 @@ def setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Theta_mtxs):
     K = K_list.return_csr_mtx()
     G = G_list.return_csr_mtx()
     F = F_list.return_csr_mtx()
+    print "\nK:", K
+    print "K nnz:", K.nnz
     return K, G, F, tau, eta, delS
 
 ''' get the jump matrix (transition probability matrix when the elements are branching probabilities) in
@@ -120,42 +125,43 @@ def manhart_morozov(ktn,nmax=2,eps=1.E-03):
     print "\ntransfer matrix K:\n", K.toarray()
 
     tau_lprev, eta_lprev = copy(tau), copy(eta)
-    t_l_vals = [] # path times
     # main loop
     l=0
-    rho_L=0. # accumulated path length probability distribution
-    t_L=0. # cumulative contribution to maximum moment
+    t_L = np.zeros(shape=nmax+1,dtype=float) # accumulated path time probability distributions. Zeroth moment is path length
+    path_times_f = open("path_times.dat","w")
+    path_times_cum_f = open("path_times_cum.dat","w")
+    path_times_f.write("# l / dynamical activity / 1st and higher moments of time distribution\n")
+    path_times_cum_f.write("# l / cum path length prob / cum 1st and higher moments of time distribution\n")
     while True:
         print "iteration %i:" % (l+1)
         # calculate moment vectors of the current iteration
         tau_l = K.dot(tau_lprev)
         eta_l = G.dot(eta_lprev)
 #        print type(tau_l), type(eta_l)
-        print "\ttau of current iteration:\n", tau_l
+#        print "\ttau of current iteration:\n", tau_l
 #        print "\t", [(i,tau_l[i]) for i in range(len(tau_l)) if tau_l[i]!=0.]
 #        print "length of new transfer vectors:", tau_l.shape, eta_l.shape
         # update cumulative moment vectors 
         tau = tau+tau_l
         eta = eta+eta_l
         t_l = F.dot(tau_l)
-        t_l_vals.append(t_l)
-        rho_L += t_l[0]
-        t_L += t_l[nmax]
+        t_L = t_L+t_l
 #        print "length of accumulated transfer vectors:", tau.shape, eta.shape
 #        print t_l
         tau_lprev, eta_lprev = copy(tau_l), copy(eta_l)
         l+=1
-        print "\trho_L:", rho_L
-        if 1.-rho_L<eps and t_l[nmax]>0. and t_l[nmax]/t_L<eps:
+        # write data to files
+        path_times_f.write("%i" % l)
+        path_times_cum_f.write("%i" % l)
+        for i in range(nmax+1):
+            path_times_f.write("  %1.12f" % t_l[i])
+            path_times_cum_f.write("  %1.12f" % t_L[i])
+        path_times_f.write("\n")
+        path_times_cum_f.write("\n")
+        print "\trho_L:", t_L[0]
+        # check convergence
+        if 1.-t_L[0]<eps and t_l[nmax]>0. and t_l[nmax]/t_L[nmax]<eps:
             break
-    # write data to files
-    with open("path_times.dat","w") as path_times_f:
-        path_times_f.write("# l / cumulative path probability / dynamical activity "+\
-            "/ 1st and higher moments of time distribution\n")
-        rho_L=0. # accumulated path length probability distribution
-        for i in range(1,l+1):
-            rho_L += t_l_vals[i-1][0]
-            path_times_f.write("%i  %1.8f" % (i,rho_L))
-            for j in range(nmax+1):
-                path_times_f.write("  %1.8f" % t_l_vals[i-1][j])
-            path_times_f.write("\n")
+#        if l>15: break
+    path_times_f.close()
+    path_times_cum_f.close()
