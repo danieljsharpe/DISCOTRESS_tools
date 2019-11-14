@@ -96,7 +96,7 @@ def get_jump_mtxs(ktn,nmax):
             Qs_list.append_csr_elem(edge.to_node.node_id-1,edge.from_node.node_id-1,edge.t*((-(np.log(edge.t)))**j))
         for j, Qh_list in enumerate(Qh_mtxs):
             Qh_list.append_csr_elem(edge.to_node.node_id-1,edge.from_node.node_id-1, \
-                edge.t*((-(-np.log((edge.t*np.exp(edge.from_node.k_esc))/(edge.rev_edge.t*np.exp(edge.to_node.k_esc)))))**j))
+                edge.t*((-np.log((edge.t*np.exp(edge.from_node.k_esc))/(edge.rev_edge.t*np.exp(edge.to_node.k_esc))))**j))
     Q = Q_list.return_csr_mtx()
     # ensure that *columns* of jump matrix sum to 1 (note that elem Q_{ij} is the jump prob for the i<-j transition), except
     # for final (absorbing) nodes, where all elements must be zero
