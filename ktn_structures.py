@@ -80,7 +80,7 @@ class Node(object):
     @staticmethod
     def calc_mr(node):
         if not Ktn.check_if_node(node): raise AttributeError
-        return node.pi*node.qf*node.qb
+        return np.exp(node.pi)*node.qf*node.qb
 
     ''' calculate self-transition probability for node '''
     def calc_node_t(self):
@@ -253,7 +253,7 @@ class Edge(object):
         if not ((Ktn.check_if_edge(edge1)) or (Ktn.check_if_edge(edge2))): raise AttributeError
         if not Ktn.check_edge_reverse(edge1,edge2): raise AttributeError
         if ((edge1.k is None) or (edge2.k is None)): raise AttributeError
-        j1 = (edge1.k*edge1.from_node.pi) - (edge2.k*edge2.from_node.pi)
+        j1 = (np.exp(edge1.k)*np.exp(edge1.from_node.pi)) - (np.exp(edge2.k)*np.exp(edge2.from_node.pi))
         j2 = -j1
         return j1, j2
 
@@ -384,18 +384,18 @@ class Ktn(object):
     def read_ktn_info(n_nodes,n_edges,ktn_id=""):
         comms = Ktn.read_single_col("communities"+ktn_id+".dat",n_nodes)
         conns = Ktn.read_double_col("ts_conns"+ktn_id+".dat",n_edges)
-        pi = Ktn.read_single_col("stat_prob"+ktn_id+".dat",n_nodes,fmt="float")
-        k = Ktn.read_single_col("ts_weights"+ktn_id+".dat",2*n_edges,fmt="float")
-        t = Ktn.read_single_col("ts_probs"+ktn_id+".dat",n_nodes+(2*n_edges),fmt="float")
+        pi = Ktn.read_single_col("stat_prob"+ktn_id+".dat",n_nodes,fmt="longfloat")
+        k = Ktn.read_single_col("ts_weights"+ktn_id+".dat",2*n_edges,fmt="longfloat")
+        t = Ktn.read_single_col("ts_probs"+ktn_id+".dat",n_nodes+(2*n_edges),fmt="longfloat")
         node_ens = Ktn.read_single_col("node_ens"+ktn_id+".dat",n_nodes,fmt="float") # optional
         ts_ens = Ktn.read_single_col("ts_ens"+ktn_id+".dat",n_edges,fmt="float") # optional
         return comms, conns, pi, k, t, node_ens, ts_ens
 
     ''' read forward and backward committor functions from files and update Ktn data structure '''
     def read_committors(self):
-        if not exists("qf"+self.ktn_id.strip("_")+".dat") or not exists("qb"+self.ktn_id.strip("_")+".dat"): raise RuntimeError
-        qf = Ktn.read_single_col("qf"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="float")
-        qb = Ktn.read_single_col("qb"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="float")
+        if not exists("qf_"+self.ktn_id.strip("_")+".dat") or not exists("qb_"+self.ktn_id.strip("_")+".dat"): raise RuntimeError
+        qf = Ktn.read_single_col("qf_"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="longfloat")
+        qb = Ktn.read_single_col("qb_"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="longfloat")
         self.update_all_tpt_vals(qf,qb)
 
     ''' write the network to files in a format readable by Gephi '''
@@ -433,9 +433,10 @@ class Ktn(object):
     def read_single_col(fname,n_lines,fmt="int"):
         fmtfunc = int
         if fmt=="float": fmtfunc = float
+        elif fmt=="longfloat": fmtfunc = np.float128
         if not exists(fname): return [None]*n_lines
         with open(fname) as datafile:
-            data = [fmtfunc(next(datafile)) for i in xrange(n_lines)]
+            data = [fmtfunc(next(datafile).split()[0]) for i in xrange(n_lines)]
         return data
 
     @staticmethod

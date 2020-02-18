@@ -2,7 +2,7 @@
 Main Python script to drive estimation and analysis of a transition network.
 
 Usage:
-python coarse_ktn_analysis.py <n_nodes> <n_edges> <n_comms>
+python coarse_ktn_analysis.py <n_nodes> <n_edges> <n_comms> <_ktn_id>
 
 Reading in a transition network requires at least 6x input data files:
 communities.dat, stat_prob.dat, ts_conns.dat, ts_weights.dat, min.A, min.B
@@ -21,6 +21,21 @@ from sys import setrecursionlimit
 if __name__=="__main__":
 
     setrecursionlimit(100000)
+
+    ### MAIN ###
+    n_nodes = int(argv[1])
+    n_edges = int(argv[2])
+    n_comms = int(argv[3])
+    ktn_id = str(argv[4])
+    assert ktn_id[0]=="_" # leading character of ktn_id should be underscore
+    full_network = Ktn(n_nodes,n_edges,n_comms,ktn_id)
+    comms, conns, pi, k, t, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id)
+    full_network.construct_ktn(comms,conns,pi,k,t,node_ens,ts_ens)
+
+    full_network.read_committors()
+    full_network.renormalise_mr()
+    Analyse_ktn.isocommittor_cut_analysis(full_network,ncuts=3)
+    full_network.print_gephi_fmt()
 
     '''
     ### SIMPLE TESTS ###
@@ -45,16 +60,6 @@ if __name__=="__main__":
     del myedge1.to_from_nodes
     print "new ID of first IN edge of node 1:", mynode1.edgelist_in[0].edge_id
     '''
-
-    ### MAIN ###
-    n_nodes = int(argv[1])
-    n_edges = int(argv[2])
-    n_comms = int(argv[3])
-    ktn_id = str(argv[4])
-    assert ktn_id[0]=="_" # leading character of ktn_id should be underscore
-    full_network = Ktn(n_nodes,n_edges,n_comms,ktn_id)
-    comms, conns, pi, k, t, node_ens, ts_ens = Ktn.read_ktn_info(n_nodes,n_edges,ktn_id)
-    full_network.construct_ktn(comms,conns,pi,k,t,node_ens,ts_ens)
 
     '''
     ### TEST KTN ###
@@ -170,6 +175,7 @@ if __name__=="__main__":
     ### write transition network output in Gephi format '''
     # full_network.print_gephi_fmt(evec_idx=0)
 
+    '''
     ### CALCULATE MOMENTS OF PATH STATISTICS ###
     manhart_morozov(full_network)
-
+    '''

@@ -12,6 +12,7 @@ from scipy.sparse.linalg import eigs as eigs_iram
 from scipy.sparse import csr_matrix
 from scipy.linalg import expm
 from scipy import optimize # code is written for v0.17.0, also tested for v0.18.0
+from os.path import exists
 
 class Analyse_ktn(object):
 
@@ -86,7 +87,7 @@ class Analyse_ktn(object):
     @staticmethod
     def calc_tlin(ktn,tau):
         for node in ktn.nodelist:
-            assert tau < 1./np.exp(node.k_esc) # must hold to obtain a proper stochastic matrix
+            assert tau <= 1./np.exp(node.k_esc) # must hold to obtain a proper stochastic matrix
             node.t = 1.-(tau*np.exp(node.k_esc))
         for edge in ktn.edgelist:
             if edge.deadts: continue
