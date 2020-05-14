@@ -33,6 +33,7 @@ May 2020
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import StrMethodFormatter
 import pyemma.msm as msm
 from msmbuilder.msm import ContinuousTimeMSM
 from ctmc_mle_obj import CTMC_MLE_Obj
@@ -40,6 +41,7 @@ from scipy.linalg import expm
 from scipy.linalg import eig
 from math import floor
 from math import ceil
+from math import sqrt
 import subprocess
 
 ''' class to read trajectory data output from an accelerated kMC simulation using DISCOTRESS,
@@ -69,7 +71,7 @@ class Discotress_coarsegrainer(object):
         dlag_vec = np.array([dlag for dlag in range(dlag_min,dlag_max+1,dlag_intvl)])
         for i, dlag in enumerate(range(dlag_min,dlag_max+1,dlag_intvl)):
             T, pi = self.estimate_dtmc_mle(dlag)
-            T_eigvals, T_evecs = np.linalg.eig(T)
+            T_eigvals, T_eigvecs = np.linalg.eig(T)
             T_eigvals = np.array(sorted(list(T_eigvals),reverse=True),dtype=float)
             for j in range(n_timescales):
                 implt_arr[j,i] = (-1.*float(dlag)*tau)/np.log(T_eigvals[j+1])
@@ -162,83 +164,69 @@ class Discotress_coarsegrainer(object):
         the j-th left eigenvector of the coarse-grained transition probability matrix T, estimated at lag time (dlag*self.tau)
         the correlation functions are analysed over the timeframe 0 to niter*dlag*self.tau '''
     def correlation_func_test(self,T,dlag,niter,corr_pairs):
-        print "performing correlation function tests for %i specified pairs of states..." % len(corr_pairs)
+        print "performing correlation function tests for %i specified pairs of eigenvectors..." % len(corr_pairs)
         print "    propagating initial probability distribution %i times, lag time = %f" % (niter,float(dlag)*self.tau)
         if self.dtrajs is None or self.ntrajs_list is None: raise IOError # not read in trajectory data yet!
-        T_eigvals, T_levecs = eig(T,left=True,right=False) # T_levecs are the normalised left eigenvectors
-
-        T_eigvals, T_revecs = eig(T,left=False,right=True) # T_revecs are the right eigenvectors
-        T_levecs = Discotress_coarsegrainer.sort_eigs(T_eigvals,T_levecs)
-        T_revecs = Discotress_coarsegrainer.sort_eigs(T_eigvals,T_revecs)
-#        print T_levecs
-        print "eigvals:\n", T_eigvals
-        print "stat distribn:\n", self.pi_coarse
-        print "psi^R_4:", T_revecs[:,0]
-        print "psi^L_1:", T_levecs[:,0]/np.sum(T_levecs[:,0])
-        # check normalisation of left and right eigenvectors
-        tmp_arr_left = np.zeros((self.n_macrostates,self.n_macrostates),dtype=float)
-        tmp_vec_left = np.zeros(self.n_macrostates,dtype=float)
-        tmp_vec_right = np.zeros(self.n_macrostates,dtype=float)
-        for i in range(self.n_macrostates):
-            for j in range(self.n_macrostates):
-                tmp_vec_left[i] += T_levecs[i,j]*self.pi_coarse[j]
-                tmp_vec_right[i] += T_revecs[j,i]
-                for k in range(self.n_macrostates):
-                    tmp_arr_left[i,j] += T_levecs[i,k]*T_levecs[j,k]*self.pi_coarse[k]
-#            print abs(np.sum(T_levecs[:,i]))
-#            assert abs(np.sum(T_levecs[:,i]))<1.E-12
-        print "tmp_arr_left:\n", tmp_arr_left
-        print "tmp_vec_left:\n", tmp_vec_left
-        print "tmp_vec_right:\n", tmp_vec_right
-        quit()
-   
+        T_eigvals, T_reigvecs = eig(T,left=True,right=False) # note that this calculates the (unnormalised) *right* eigenvectors because T is transposed
+        T_eigvals, T_leigvecs = eig(T,left=False,right=True) # note that this calculates the (unnormalised) *left* eigenvectors because T is transposed
+        T_eigvals, T_reigvecs, T_leigvecs = Discotress_coarsegrainer.check_sort_eigs(T_eigvals,T_reigvecs,T_leigvecs,self.pi_coarse)
+        print "finished checking eigenvectors"
         corr_funcs_arr = np.zeros((len(corr_pairs),niter+1),dtype=float) # array of correlation function values
         t_vec = np.array([float(i*dlag)*self.tau for i in range(niter+1)]) # array of corresponding time values
-        for j, corr_pair in enumerate(corr_pairs): # loop over specified pairs of states for which to calculate correlation functions
+        for j, corr_pair in enumerate(corr_pairs): # loop over specified pairs of eigenfunctions for which to calculate correlation functions
             corrcounts_arr = np.zeros((self.n_macrostates,niter+1),dtype=int) # time-dependent number of counts for states
-            dtraj_start = sum(self.ntrajs_list[:corr_pair[0]])
-            dtraj_end = dtraj_start+self.ntrajs_list[corr_pair[0]]
-            for dtraj in self.dtrajs[dtraj_start:dtraj_end]: # loop over trajectories that are initialised in macrostate corr_pair[0]
+            for dtraj in self.dtrajs: # loop over trajectories that are initialised in macrostate corr_pair[0]
                 assert np.shape(dtraj)[0]>=dlag*niter # otherwise there isnt enough trajectory data to do this many iterations!
                 for k, i in enumerate(range(0,(niter*dlag)+dlag,dlag)):
                     corrcounts_arr[dtraj[i],k] += 1
-            proj_zero_vec = np.zeros(self.ntrajs_list[corr_pair[0]],dtype=float) # vector containing elems from projection of initial distribution onto left eigenvector of second state
+            print "\n", corrcounts_arr
+            for i in range(niter+1): assert np.sum(corrcounts_arr[:,i])==np.sum(self.ntrajs_list)
+            proj_zero_vec = np.zeros(np.sum(self.ntrajs_list),dtype=float) # vector containing elems from projection of initial distribution onto left eigenvector of second state
             totcounts = 0
             for k, ncounts in enumerate(corrcounts_arr[:,0]):
                 if ncounts==0: continue
-                proj_zero_vec[totcounts:ncounts+totcounts] = [T_levecs[k,corr_pair[1]]]*ncounts
+                proj_zero_vec[totcounts:ncounts+totcounts] = [T_leigvecs[corr_pair[1],k]]*ncounts
                 totcounts += ncounts
             for i in range(niter+1):
-                proj_t_vec = np.zeros(self.ntrajs_list[corr_pair[0]],dtype=float) # vector containing elems from projection of distribution at time t onto left eigenvector of first state
+                proj_t_vec = np.zeros(np.sum(self.ntrajs_list),dtype=float) # vector containing elems from projection of distribution at time t onto left eigenvector of first state
                 totcounts = 0
                 for k, ncounts in enumerate(corrcounts_arr[:,i]):
                     if ncounts==0: continue
-                    proj_t_vec[totcounts:ncounts+totcounts] = [T_levecs[k,corr_pair[0]]]*ncounts
+                    proj_t_vec[totcounts:ncounts+totcounts] = [T_leigvecs[corr_pair[0],k]]*ncounts
                     totcounts += ncounts
-                corr_funcs_arr[j,i] = np.dot(proj_zero_vec,proj_t_vec) # quack /float(np.sum(corrcounts_arr[:,i]))
-        return corr_funcs_arr, t_vec
+                corr_funcs_arr[j,i] = np.dot(proj_zero_vec,proj_t_vec)/float(np.sum(corrcounts_arr[:,i]))
+        return corr_funcs_arr, t_vec, T_eigvals
 
     ''' plot the results of the correlation function test '''
-    def plot_corrfunc_test(self,corr_funcs_arr,t_vec,corr_pairs,figfmt="pdf"):
+    def plot_corrfunc_test(self,corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau,figfmt="pdf"):
         print "plotting results of the correlation function test for %i pairs of states" % len(corr_pairs)
         plt.figure(figsize=(10.,7.)) # size in inches
-#        corr_funcs_arr = np.log(corr_funcs_arr)
+        if tau is not None: # indicates that the eigenvalues correspond to a DTMC, convert to CTMC eigenvalues
+            T_eigvals = np.array([(1./tau)*np.log(T_eigval) for T_eigval in T_eigvals])
         for i in range(len(corr_pairs)):
-            plt.plot(t_vec,corr_funcs_arr[i,:],linewidth=5,color=self.pltcolors[i], \
+            if corr_pairs[i][0]==corr_pairs[i][1]: # autocorrelation function should be a smooth exponential decay, plot this function
+                tvals_eigval = np.linspace(t_vec[0],t_vec[-1],200) # time values for plotting the smooth exponential decay according to the eigenvalue
+                plt.plot(tvals_eigval,[np.exp(T_eigvals[corr_pairs[i][0]]*t) for t in tvals_eigval], \
+                     linewidth=3,color=self.pltcolors[i])
+            plt.scatter(t_vec,corr_funcs_arr[i,:],s=40,marker="o",color=self.pltcolors[i], \
                      label="$C_{"+str(corr_pairs[i][0]+1)+str(corr_pairs[i][1]+1)+"}$") # note that the state labels in the plot are indexed from 1
         plt.xlabel("Time $t\ /\ \\tau$",fontsize=42)
         plt.ylabel("Correlation function $C_{lk}(t)$",fontsize=42)
         plt.legend(loc="upper right",fontsize=24)
         ax=plt.gca()
+        nyticks=13; ymin=-0.2; ymax=1.
+        ytick_intvl=(abs(ymax)+abs(ymin))/float(nyticks-1)
         ax.set_xlim([0,niter+1])
-        ax.set_ylim([0.,1.])
+        ax.set_ylim([ymin,ymax])
         ax.tick_params(direction="out",labelsize=24)
         ax.set_xticks(t_vec)
-        ax.set_yticks([0.+(float(i)*0.1) for i in range(11)])
+        ax.set_yticks([ymin+(float(i)*ytick_intvl) for i in range(nyticks)])
         xticklabels=["$"+str(i)+"$" for i in range(niter+1)]
-        yticklabels=["$"+str(0.+(float(i)*0.1))+"$" for i in range(11)]
+        yticklabels=["$"+str(ymin+(float(i)*ytick_intvl))+"$" for i in range(nyticks)]
+        ax.yaxis.set_major_formatter(StrMethodFormatter("{x:.1f}")) # 1dp
         ax.set_xticklabels(xticklabels)
         ax.set_yticklabels(yticklabels)
+        ax.axhline(y=0.,color="lightgray",linewidth=4)
         plt.tight_layout()
         plt.savefig("corrfunc_test."+figfmt,format=figfmt,bbox_inches="tight")
         plt.show()
@@ -335,12 +323,40 @@ class Discotress_coarsegrainer(object):
         for i in range(np.shape(T)[0]): assert abs(np.sum(T[i,:])-1.)<1.E-08
         for i, prob in enumerate(np.dot(pi,T)): assert abs(prob-pi[i])<1.E-08
 
-    ''' sort eigenvalues, then sort eigenvectors in order of corresponding eigenvalues, and renormalise eigenvectors '''
+    ''' sort eigenvalues, then sort right and left eigenvectors in order of corresponding eigenvalues, and renormalise eigenvectors
+        the normalised eigenvectors are checked (eg dominant right eigenvector is stationary distribution, left and right eigenvectors
+        satisfy normalisation conditions)
+        note also that the left and right eigenvector arrays become transposed '''
     @staticmethod
-    def sort_eigs(eigvals,eigvecs):
-        
-        eigvals = np.array(sorted(list(eigs),reverse=True),dtype=float)
-        for i in range(np.shape(eigvecs)[0]): eigvecs[:,i] *= 1./np.sum(eigvecs[:,i])
+    def check_sort_eigs(eigvals,reigvecs,leigvecs,stat_distribn):
+        n_states = np.shape(reigvecs)[0]
+        reigvecs = np.array([eigvec for _, eigvec in sorted(zip(list(eigvals),list(np.transpose(reigvecs))), \
+            key=lambda pair: pair[0], reverse=True)],dtype=float)
+        leigvecs = np.array([eigvec for _, eigvec in sorted(zip(list(eigvals),list(np.transpose(leigvecs))), \
+            key=lambda pair: pair[0], reverse=True)],dtype=float)
+        eigvals = np.array(sorted(list(eigvals),reverse=True),dtype=float)
+        # compute normalisation factors
+        tmp_arr_right = np.zeros((n_states,n_states),dtype=float) # elements required for normalisation of right eigenvectors
+        tmp_arr_left = np.zeros((n_states,n_states),dtype=float) # elements required for normalisation of left eigenvectors
+        for i in range(n_states):
+            for j in range(n_states):
+                for k in range(n_states):
+                    tmp_arr_right[i,j] += reigvecs[i,k]*reigvecs[j,k]/stat_distribn[k]
+                    tmp_arr_left[i,j] += leigvecs[i,k]*leigvecs[j,k]*stat_distribn[k]
+        # normalise
+        for i in range(n_states):
+            reigvecs[i,:] *= 1./sqrt(tmp_arr_right[i,i])
+            leigvecs[i,:] *= 1./sqrt(tmp_arr_left[i,i])
+        # various checks for normalisation and orthogonality of left and right eigenvectors
+        for i in range(n_states): assert abs(reigvecs[0,i]-stat_distribn[i])<1.E-08
+        for i in range(n_states):
+            assert abs(np.sum(reigvecs[i,:])-(lambda i: 1. if i==0 else 0.)(i))<1.E-10
+            assert abs(np.dot(stat_distribn,leigvecs[i,:])-(lambda i: 1. if i==0 else 0.)(i))<1.E-10
+            for j in range(n_states):
+                if i==j: continue
+                assert abs(tmp_arr_right[i,j])<1.E-10
+                assert abs(tmp_arr_left[i,j])<1.E-10
+        return eigvals, reigvecs, leigvecs
 
     ''' construct the count matrix from discretised trajectories '''
     def get_counts_mtx(self):
@@ -371,8 +387,8 @@ if __name__=="__main__":
     p0 = None # alternatively to providing a state_idx for the CK test, can specify an arbitrary initial probability distribution
     stateslist = [0,1,2,3,7] # list of states to plot the occupation probability distributions for in the CK test (indexed from zero)
     # correlation function test
-    # pairs of states (indexed from 0) [i,j] for which to compute correlation functions. i=j and i=/=j are auto- and cross-correlation funcs, respectively
-    corr_pairs = [[3,3],[3,0],[3,5]]
+    # pairs of dominant eigenvectors (indexed from 0) [i,j] for which to compute correlation functions. i=j and i=/=j are auto- and cross-correlation funcs, respectively
+    corr_pairs = [[3,3]]#,[3,0],[3,5]]
 
 
     ### RUN ###
@@ -390,12 +406,12 @@ if __name__=="__main__":
 
     ### TESTS AND PLOTS ###
     # implied timescale test
-    implt_arr, dlag_vec = dcg1.calc_implied_timescales(dlag_min,dlag_max,n_timescales=n_timescales)
-    dcg1.implied_timescales_plot(implt_arr,dlag_vec)
+#    implt_arr, dlag_vec = dcg1.calc_implied_timescales(dlag_min,dlag_max,n_timescales=n_timescales)
+#    dcg1.implied_timescales_plot(implt_arr,dlag_vec)
     # Chapman-Kolmogorov test
-    pt_arr, t_vec = dcg1.chapman_kolmogorov_test(T,dlag,niter,state_idx)
-    dcg1.plot_ck_test(pt_arr,t_vec,stateslist)
+#    pt_arr, t_vec = dcg1.chapman_kolmogorov_test(T,dlag,niter,state_idx)
+#    dcg1.plot_ck_test(pt_arr,t_vec,stateslist)
     # correlation function test
-#    corr_funcs_arr, t_vec = dcg1.correlation_func_test(T,dlag,niter,corr_pairs)
-#    print corr_funcs_arr
-#    dcg1.plot_corrfunc_test(corr_funcs_arr,t_vec,corr_pairs)
+    corr_funcs_arr, t_vec, T_eigvals = dcg1.correlation_func_test(T,dlag,niter,corr_pairs)
+    print corr_funcs_arr
+    dcg1.plot_corrfunc_test(corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau*float(dlag))
