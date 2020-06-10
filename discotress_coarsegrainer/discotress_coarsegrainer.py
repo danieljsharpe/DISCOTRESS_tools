@@ -33,12 +33,12 @@ May 2020
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import StrMethodFormatter
 import pyemma.msm as msm
 from msmbuilder.msm import ContinuousTimeMSM
 from ctmc_mle_obj import CTMC_MLE_Obj
 from scipy.linalg import expm
 from scipy.linalg import eig
+from copy import deepcopy
 from math import floor
 from math import ceil
 from math import sqrt
@@ -48,9 +48,10 @@ import subprocess
     and perform estimation and validatation of a coarse-grained Markov chain '''
 class Discotress_coarsegrainer(object):
 
-    def __init__(self,n_macrostates,tau):
+    def __init__(self,n_macrostates,tau,trajtime):
         self.n_macrostates = n_macrostates
         self.tau = tau
+        self.trajtime = trajtime
         self.pi = Discotress_coarsegrainer.read_single_col("stat_prob.dat",float)
         self.comms = Discotress_coarsegrainer.read_single_col("communities.dat",int)
         self.calc_pi_coarse()
@@ -162,44 +163,61 @@ class Discotress_coarsegrainer(object):
     ''' perform the correlation function test for specified auto- or cross-correlation functions [i,j]
         the probability distribution initially localised at the i-th state (computed from the discretised trajectories) is projected onto
         the j-th left eigenvector of the coarse-grained transition probability matrix T, estimated at lag time (dlag*self.tau)
-        the correlation functions are analysed over the timeframe 0 to niter*dlag*self.tau '''
-    def correlation_func_test(self,T,dlag,niter,corr_pairs):
+        the correlation functions are analysed over the timeframe 0 to niter*intvl*dlag*self.tau '''
+    def correlation_func_test(self,T,dlag,niter,intvl,corr_pairs):
         print "performing correlation function tests for %i specified pairs of eigenvectors..." % len(corr_pairs)
-        print "    propagating initial probability distribution %i times, lag time = %f" % (niter,float(dlag)*self.tau)
+        print "    checking correlation functions at %i different multiples of lag time %f" % (niter,float(dlag)*self.tau)
         if self.dtrajs is None or self.ntrajs_list is None: raise IOError # not read in trajectory data yet!
         T_eigvals, T_reigvecs = eig(T,left=True,right=False) # note that this calculates the (unnormalised) *right* eigenvectors because T is transposed
         T_eigvals, T_leigvecs = eig(T,left=False,right=True) # note that this calculates the (unnormalised) *left* eigenvectors because T is transposed
         T_eigvals, T_reigvecs, T_leigvecs = Discotress_coarsegrainer.check_sort_eigs(T_eigvals,T_reigvecs,T_leigvecs,self.pi_coarse)
-        print "finished checking eigenvectors"
+        print "    finished checking eigenvectors"
         corr_funcs_arr = np.zeros((len(corr_pairs),niter+1),dtype=float) # array of correlation function values
-        t_vec = np.array([float(i*dlag)*self.tau for i in range(niter+1)]) # array of corresponding time values
+        t_vec = np.array([float(i*intvl*dlag)*self.tau for i in range(niter+1)]) # array of corresponding time values
         for j, corr_pair in enumerate(corr_pairs): # loop over specified pairs of eigenfunctions for which to calculate correlation functions
+            print "correlation function:  (%i, %i)" % (corr_pair[0]+1,corr_pair[1]+1)
+            assert corr_pair[0]>0 and corr_pair[1]>0 # it doesn't make sense to look at correlation functions involving the stationary eigenmode, C_11(t) = 1 by definition
+            for i, lagt in enumerate(t_vec):
+                print "   multiple of lag time:", i*intvl
+                val=0. # value of correlation function at this lag time
+                for dtraj in self.dtrajs: # loop over all trajectories
+                    k=0
+                    while k+(i*intvl*dlag) < np.shape(dtraj)[0]: # process trajectory in shifting window until total trajectory time is met
+                        val += T_leigvecs[corr_pair[1],dtraj[k+(i*intvl*dlag)]]*T_leigvecs[corr_pair[0],dtraj[k]]
+                        k += 1
+                    val *= 1./float(k)
+                    corr_funcs_arr[j,i] += val # /float(np.shape(self.dtrajs[0]))
+            corr_funcs_arr[j,:] *= 1./np.sum(self.ntrajs_list)
+
+            '''
             corrcounts_arr = np.zeros((self.n_macrostates,niter+1),dtype=int) # time-dependent number of counts for states
-            for dtraj in self.dtrajs: # loop over trajectories that are initialised in macrostate corr_pair[0]
+            for dtraj in self.dtrajs: # loop over all trajectories
                 assert np.shape(dtraj)[0]>=dlag*niter # otherwise there isnt enough trajectory data to do this many iterations!
                 for k, i in enumerate(range(0,(niter*dlag)+dlag,dlag)):
                     corrcounts_arr[dtraj[i],k] += 1
             print "\n", corrcounts_arr
-            for i in range(niter+1): assert np.sum(corrcounts_arr[:,i])==np.sum(self.ntrajs_list)
-            proj_zero_vec = np.zeros(np.sum(self.ntrajs_list),dtype=float) # vector containing elems from projection of initial distribution onto left eigenvector of second state
+            for i in range(niter+1): assert np.sum(corrcounts_arr[:,i])==np.sum(self.ntrajs_list) # since all trajectories should be at least of length niter*dlag*self.tau
+            proj_zero_vec = np.zeros(np.sum(self.ntrajs_list),dtype=float) # vector containing elems from projection of initial distribution onto second left eigenvector of specified pair
             totcounts = 0
             for k, ncounts in enumerate(corrcounts_arr[:,0]):
                 if ncounts==0: continue
                 proj_zero_vec[totcounts:ncounts+totcounts] = [T_leigvecs[corr_pair[1],k]]*ncounts
                 totcounts += ncounts
+            print "\n", proj_zero_vec
             for i in range(niter+1):
-                proj_t_vec = np.zeros(np.sum(self.ntrajs_list),dtype=float) # vector containing elems from projection of distribution at time t onto left eigenvector of first state
+                proj_t_vec = np.zeros(np.sum(self.ntrajs_list),dtype=float) # vector containing elems from projection of distribution at time t onto first left eigenvector of specified pair
                 totcounts = 0
                 for k, ncounts in enumerate(corrcounts_arr[:,i]):
                     if ncounts==0: continue
                     proj_t_vec[totcounts:ncounts+totcounts] = [T_leigvecs[corr_pair[0],k]]*ncounts
                     totcounts += ncounts
                 corr_funcs_arr[j,i] = np.dot(proj_zero_vec,proj_t_vec)/float(np.sum(corrcounts_arr[:,i]))
+            '''
         return corr_funcs_arr, t_vec, T_eigvals
 
     ''' plot the results of the correlation function test '''
-    def plot_corrfunc_test(self,corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau,figfmt="pdf"):
-        print "plotting results of the correlation function test for %i pairs of states" % len(corr_pairs)
+    def plot_corrfunc_test(self,corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau,niter,intvl,figfmt="pdf"):
+        print "plotting results of the correlation function test for %i pairs of dynamical eigenmodes" % len(corr_pairs)
         plt.figure(figsize=(10.,7.)) # size in inches
         if tau is not None: # indicates that the eigenvalues correspond to a DTMC, convert to CTMC eigenvalues
             T_eigvals = np.array([(1./tau)*np.log(T_eigval) for T_eigval in T_eigvals])
@@ -208,25 +226,27 @@ class Discotress_coarsegrainer(object):
                 tvals_eigval = np.linspace(t_vec[0],t_vec[-1],200) # time values for plotting the smooth exponential decay according to the eigenvalue
                 plt.plot(tvals_eigval,[np.exp(T_eigvals[corr_pairs[i][0]]*t) for t in tvals_eigval], \
                      linewidth=3,color=self.pltcolors[i])
-            plt.scatter(t_vec,corr_funcs_arr[i,:],s=40,marker="o",color=self.pltcolors[i], \
+            plt.scatter(t_vec,corr_funcs_arr[i,:],s=100,marker="o",color=self.pltcolors[i], \
                      label="$C_{"+str(corr_pairs[i][0]+1)+str(corr_pairs[i][1]+1)+"}$") # note that the state labels in the plot are indexed from 1
         plt.xlabel("Time $t\ /\ \\tau$",fontsize=42)
         plt.ylabel("Correlation function $C_{lk}(t)$",fontsize=42)
         plt.legend(loc="upper right",fontsize=24)
         ax=plt.gca()
-        nyticks=13; ymin=-0.2; ymax=1.
+        nxticks=niter+1
+        assert abs((abs(t_vec[-1])+abs(t_vec[0]))%float(nxticks-1))<1.E-10 # enforce that time tick labels are integers
+        nyticks=8; ymin=-0.2; ymax=1.2
         ytick_intvl=(abs(ymax)+abs(ymin))/float(nyticks-1)
-        ax.set_xlim([0,niter+1])
+        ax.set_xlim([t_vec[0],t_vec[-1]])
         ax.set_ylim([ymin,ymax])
         ax.tick_params(direction="out",labelsize=24)
-        ax.set_xticks(t_vec)
+        ax.set_xticks([round(x,0) for x in np.linspace(t_vec[0],t_vec[-1],nxticks)])
         ax.set_yticks([ymin+(float(i)*ytick_intvl) for i in range(nyticks)])
-        xticklabels=["$"+str(i)+"$" for i in range(niter+1)]
-        yticklabels=["$"+str(ymin+(float(i)*ytick_intvl))+"$" for i in range(nyticks)]
-        ax.yaxis.set_major_formatter(StrMethodFormatter("{x:.1f}")) # 1dp
+        xticklabels=["$"+str(i*intvl)+"$" for i in range(niter+1)]
+        yticklabels=["$"+str((lambda x: x if x!=0. else abs(x))(round(ymin+(float(i)*ytick_intvl),1)))+"$" for i in range(nyticks)]
         ax.set_xticklabels(xticklabels)
         ax.set_yticklabels(yticklabels)
         ax.axhline(y=0.,color="lightgray",linewidth=4)
+        ax.axhline(y=1.,color="lightgray",linewidth=4)
         plt.tight_layout()
         plt.savefig("corrfunc_test."+figfmt,format=figfmt,bbox_inches="tight")
         plt.show()
@@ -235,10 +255,12 @@ class Discotress_coarsegrainer(object):
         (corresponding to the number of discrete time intervals in the discretised trajectories) dlag, by solving
         numerically for the maximum likelihood transition matrix '''
     def estimate_dtmc_mle(self,dlag=1):
-        print "performing maximum-likelihood estimation of DTMC at lag time = %f" % (float(dlag)*self.tau)
+        print "\nperforming maximum-likelihood estimation of DTMC at lag time = %f" % (float(dlag)*self.tau)
         pyemma_mle_estimator = msm.MaximumLikelihoodMSM(lag=dlag,reversible=True, \
-            statdist_constraint=self.pi_coarse,count_mode="sliding",maxiter=1000000,maxerr=1.E-08)
+            statdist_constraint=self.pi_coarse,count_mode="sliding",mincount_connectivity=0,maxiter=1000000,maxerr=1.E-08)
         pyemma_mle_msm_obj = pyemma_mle_estimator.estimate(self.dtrajs)
+        Discotress_coarsegrainer.check_fully_connected(pyemma_mle_msm_obj.count_matrix_full)
+        assert pyemma_mle_msm_obj.nstates==self.n_macrostates # MSM object can have fewer states if trajectories dont yield fully connected count matrix
         for i in range(self.n_macrostates): assert abs(pyemma_mle_msm_obj.pi[i]-self.pi_coarse[i]) < 1.E-08
         Discotress_coarsegrainer.check_row_stochasticity(pyemma_mle_msm_obj.P,pyemma_mle_msm_obj.pi)
         return pyemma_mle_msm_obj.P, pyemma_mle_msm_obj.pi
@@ -246,17 +268,19 @@ class Discotress_coarsegrainer(object):
     ''' estimate a coarse-grained reversible DTMC with constrained stationary distribution, at discretised lag time
         dlag, by using a Gibbs sampling Monte Carlo algorithm '''
     def estimate_dtmc_gibbs(self,dlag=1):
-        print "performing Gibbs sampling of DTMC at lag time = %f" % (float(dlag)*self.tau)
+        print "\nperforming Gibbs sampling of DTMC at lag time = %f" % (float(dlag)*self.tau)
         pyemma_gibbs_estimator = msm.BayesianMSM(lag=dlag,nsamples=100,nsteps=None,reversible=True, \
-            statdist_constraint=self.pi_coarse,count_mode="effective",conf=0.95)
+            statdist_constraint=self.pi_coarse,count_mode="effective",mincount_connectivity=0,conf=0.95)
         pyemma_gibbs_msm_obj = pyemma_gibbs_estimator.estimate(self.dtrajs)
+        Discotress_coarsegrainer.check_fully_connected(pyemma_gibbs_estimator.count_matrix_full)
+        assert pyemma_mle_msm_obj.nstates==self.n_macrostates
         for i in range(self.n_macrostates): assert abs(pyemma_gibbs_msm_obj.pi[i]-self.pi_coarse[i]) < 1.E-08
         Discotress_coarsegrainer.check_row_stochasticity(pyemma_gibbs_msm_obj.P,pyemma_gibbs_msm_obj.pi)
         return pyemma_gibbs_msm_obj.P, pyemma_gibbs_msm_obj.pi
 
     ''' estimate a coarse-grained reversible CTMC with constrained stationary distribution by maximum likelihood approach '''
     def estimate_ctmc_mle(self):
-        print "performing maximum-likelihood estimation of CTMC"
+        print "\nperforming maximum-likelihood estimation of CTMC"
         ctmc_obj = self.construct_ctmc_obj()
         tmtx_guess, pi_guess = self.estimate_dtmc_mle() # this DTMC is used to form an initial guess rate matrix
         ctmc_obj.fit_mle(tmtx_guess,pi_guess,guess_str="pseudo") # NB this is a custom function in a hacked version of MSMBuilder
@@ -275,27 +299,32 @@ class Discotress_coarsegrainer(object):
         The kPS simulation data is contained in the files "walkers.x.y.dat", where x specifies the initial
         macrostate of the trajectory and y the ID of the trajectory in the set for this initial macrostate '''
     def readindtrajs(self,ntrajs_list,tau=None):
-        print "reading in trajectories to discretised format"
         assert np.shape(ntrajs_list)[0]==self.n_macrostates
         if tau is None: tau = self.tau
+        assert (self.trajtime/tau).is_integer()
+        print "\nreading in trajectories up to total time: %f    into discretised format at lag time: %f" % (self.trajtime,tau)
         self.ntrajs_list = ntrajs_list
-        self.dtrajs = [[] for i in range(np.sum(ntrajs_list))] # record data in the current dtraj
-        ntraj=0
-        for i in range(self.n_macrostates):
-            for j in range(ntrajs_list[i]):
-                t=0. # next time for which the occupied macrostate is to be recorded
+        dummy_arr = np.zeros(int(self.trajtime/tau)+1,dtype=int)
+        self.dtrajs = [deepcopy(dummy_arr) for i in range(np.sum(self.ntrajs_list))] # array of discretised trajectories, must be list of int-ndarray's
+        ntraj=0 # current trajectory being read in
+        for i in range(self.n_macrostates): # loop over sets of trajectories starting from each macrostate
+            for j in range(ntrajs_list[i]): # loop over individual trajectories starting from this macrostate
                 walker_f =  open("walker."+str(i)+"."+str(j)+".dat","r")
                 # read in all communities and times data
-                trajdata = [(int(line.split()[1]),float(line.split()[2])) for line in walker_f.readlines()]
+                trajdata = [(int(line.split()[1]),float(line.split()[3])) for line in walker_f.readlines()]
                 walker_f.close()
                 prev_comm = trajdata[0][0]
+                t=0. # next time for which the occupied macrostate is to be recorded
+                k=0
                 for comm, time in trajdata:
-                    while time >= t:
-                        self.dtrajs[ntraj].append(prev_comm) # record data in the current dtraj
+                    while time >= t and t <= self.trajtime:
+                        self.dtrajs[ntraj][k] = prev_comm # record data in the current dtraj
                         t += tau
+                        k += 1
                     prev_comm = comm
+                    if time > self.trajtime: break
+                assert k==int(self.trajtime/tau)+1 # check that correct number of entries have been recorded in the dtrajs array
                 ntraj += 1
-        self.dtrajs = [np.array(dtraj,dtype=int) for dtraj in self.dtrajs]
         print "finished reading in %i trajectories in discretised representation" % ntraj
 
     ''' read a single-column file "fname" of the specified data type '''
@@ -322,6 +351,17 @@ class Discotress_coarsegrainer(object):
     def check_row_stochasticity(T,pi):
         for i in range(np.shape(T)[0]): assert abs(np.sum(T[i,:])-1.)<1.E-08
         for i, prob in enumerate(np.dot(pi,T)): assert abs(prob-pi[i])<1.E-08
+
+    ''' check that the square matrix C_mtx is fully connected (check Fiedler value, ie smallest value of Laplacian matrix, is positive) '''
+    @staticmethod
+    def check_fully_connected(C_mtx):
+        A_mtx = np.zeros((np.shape(C_mtx)[0],np.shape(C_mtx)[0]),dtype=float) # adjacency matrix (with zeroes along diagonal)
+        for i in range(np.shape(C_mtx)[0]):
+            for j in range(np.shape(C_mtx)[0]):
+                if C_mtx[i,j]: A_mtx[i,j]=1.
+        D_vec = np.array([np.sum(A_mtx[:,i]) for i in range(np.shape(A_mtx)[0])]) # vector of node degrees in matrix
+        L_eigvals, L_eigvecs = np.linalg.eig(np.diag(D_vec)-A_mtx) # eigenspectrum of Laplacian matrix
+        assert sorted(L_eigvals,reverse=True)[0]>0.
 
     ''' sort eigenvalues, then sort right and left eigenvectors in order of corresponding eigenvalues, and renormalise eigenvectors
         the normalised eigenvectors are checked (eg dominant right eigenvector is stationary distribution, left and right eigenvectors
@@ -374,6 +414,7 @@ if __name__=="__main__":
     ### SET PARAMS FOR ESTIMATION ###
     n_macrostates = 11 # number of macrostates in the kPS simulation of the original Markov chain / number of microstates of the reduced Markov chain
     tau = 1.E+04 # lag time (or "tintvl") to read in trajectory data
+    trajtime = 1.E+07 # read in data up until this time (which must be met) for *all* trajectories (note that trajectories may exceed this length in time)
     dlag = 2 # integer multiple of lag time at which trajectory data is interpreted (ie the lag time of the transition matrix is dlag*tau)
     ntrajs_list = Discotress_coarsegrainer.read_single_col("ntrajs.dat",int)
     ### SET PARAMS FOR TESTS AND PLOTS ###
@@ -382,20 +423,22 @@ if __name__=="__main__":
     dlag_max = 10 # max dlag in testing for convergence of implied timescales
     n_timescales = 8 # number of dominant implied timescales to compute
     # Chapman-Kolmogorov test
-    niter=15 # number of iterations in the Chapman-Kolmogorov and correlation function tests
+    niter_ck = 15 # number of iterations in the Chapman-Kolmogorov test
     state_idx = 3 # initial probability distribution in Chapman-Kolmogorov test is localised in this state
     p0 = None # alternatively to providing a state_idx for the CK test, can specify an arbitrary initial probability distribution
     stateslist = [0,1,2,3,7] # list of states to plot the occupation probability distributions for in the CK test (indexed from zero)
     # correlation function test
+    niter_cf = 15 # number of iterations in the correlation function test
+    tintvl_cf = 2 # interval of lag times for correlation function test
     # pairs of dominant eigenvectors (indexed from 0) [i,j] for which to compute correlation functions. i=j and i=/=j are auto- and cross-correlation funcs, respectively
-    corr_pairs = [[3,3]]#,[3,0],[3,5]]
+    corr_pairs = [[1,1],[2,2],[3,3],[2,3]]
 
 
     ### RUN ###
     ### CONSTRUCT MARKOV CHAIN ###
-    dcg1 = Discotress_coarsegrainer(n_macrostates,tau)
+    dcg1 = Discotress_coarsegrainer(n_macrostates,tau,trajtime)
     dcg1.readindtrajs(ntrajs_list)
-#    print dcg1.dtrajs
+
     T, pi = dcg1.estimate_dtmc_mle(dlag) # transition probability matrix and stationary distribution vector for DTMC from MLE
 #    T, pi = dcg1.estimate_dtmc_gibbs() # transition probability matrix and stationary distribution vector for DTMC from Gibbs sampling
 #    K, pi = dcg1.estimate_ctmc_mle() # transition rate matrix and stationary distribution vector for CTMC from MLE
@@ -409,9 +452,9 @@ if __name__=="__main__":
 #    implt_arr, dlag_vec = dcg1.calc_implied_timescales(dlag_min,dlag_max,n_timescales=n_timescales)
 #    dcg1.implied_timescales_plot(implt_arr,dlag_vec)
     # Chapman-Kolmogorov test
-#    pt_arr, t_vec = dcg1.chapman_kolmogorov_test(T,dlag,niter,state_idx)
+#    pt_arr, t_vec = dcg1.chapman_kolmogorov_test(T,dlag,niter_ck,state_idx)
 #    dcg1.plot_ck_test(pt_arr,t_vec,stateslist)
     # correlation function test
-    corr_funcs_arr, t_vec, T_eigvals = dcg1.correlation_func_test(T,dlag,niter,corr_pairs)
+    corr_funcs_arr, t_vec, T_eigvals = dcg1.correlation_func_test(T,dlag,niter_cf,tintvl_cf,corr_pairs)
     print corr_funcs_arr
-    dcg1.plot_corrfunc_test(corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau*float(dlag))
+    dcg1.plot_corrfunc_test(corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau*float(dlag),niter_cf,tintvl_cf)
