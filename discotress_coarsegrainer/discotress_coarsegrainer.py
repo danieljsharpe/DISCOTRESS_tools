@@ -108,57 +108,48 @@ class Discotress_coarsegrainer(object):
         plt.savefig("tk_test."+figfmt,format=figfmt,bbox_inches="tight")
         plt.show()
 
-    ''' propagate an initial probability distribution p0 with the transition matrix T estimated at lag time dlag*tau to time niter*dlag*tau
-        If state_idx is provided, then the initial distribution is localised at the state of that idx.
-        Otherwise, if stateidx is not provided, an arbitrary initial probability distribution can be given.
-        The time-dependent occupation probabilities of all the states in stateslist are recorded.
-        Similar to the chapman_kolmogorov_test() function, except there the decay of probability initially localised in the current state of
-        interest is considered in turn and only for that initially occupied state of the current iteration '''
-    def propagate_ptdistribn(self,T,dlag,niter,intvl,stateslist,init_state_idx=-1,p0=None):
-        print "\n\nperforming propagation of time-dependent occupation probability distribution...\n   " \
-            "recording probability distribution %i times at intervals of %i, lag time = %f" % (niter,intvl,float(dlag)*self.tau)
-        # check input parameters to function
-        if init_state_idx<0 and p0 is None: raise IOError # if dont specify initial state must provide initial probability distribution p0
-        if init_state_idx>0: # using an initial probability distribution localised in the specified state
-            assert init_state_idx<self.n_macrostates
-            p0 = np.zeros(self.n_macrostates,dtype=float)
-            p0[init_state_idx]=1.
-        else: # using the provided initial probability distribution p0
-            assert abs(np.sum(p0)-1.)<1.E-14
-            for p0_val in p0: assert (p0_val>=0. and p0_val<=1.)
+    ''' perform the Chapman-Kolmogorov test for trajectories initialised from the specified initial state, computing the time-dependent
+        occupation probabilities p(t) for each of the states listed in stateslist.
+        That is, propagate an initial probability distribution localised in the specified initial state, using the transition matrix T
+        estimated at lag time dlag*tau, up to time niter*dlag*tau, and compare with the result from the trajectory data.
+        (Compare with chapman_kolmogorov_relax() function, which monitors relaxation of initial probability distributions localised in
+        a set of specified initial states) '''
+    def chapman_kolmogorov_specinit(self,T,dlag,niter,intvl,initstate,stateslist):
+        print "\n\nperforming Chapman-Kolmogorov test for trajectories initialised from state %i..." %(initstate+1)
+        print "  CK test will determine the time-dependent occupation probability distributions for %i states" % len(stateslist)
+        print "  no. of iterations: %i      at intervals (multiple of lag time): %i      lag time = %1.2e" \
+            % (niter,intvl,float(dlag)*self.tau)
         statesmask=[0]*self.n_macrostates
         for state_idx in stateslist: statesmask[state_idx]=1
         # perform the simulation on the coarse-grained Markov chain
         pt_arr = np.zeros((len(stateslist),niter+1),dtype=float) # array of time-dependent occupation probabilities p(t) for specified states
         t_vec = np.array([float(i*intvl*dlag)*self.tau for i in range(niter+1)]) # array of corresponding time values
-        pt = p0 # set time-dependent distribution to initial distribution
-        pt_arr[:,0] = [prob for k, prob in enumerate(p0) if statesmask[k]] # record initial distribution for specified states
+        p0 = np.zeros(self.n_macrostates,dtype=float)
+        p0[initstate]=1.; pt_arr[initstate,0]=1.
         pt = p0.copy()
         for tint in range(1,(intvl*niter)+1): # propagate the occupation probability distribution
             pt = np.dot(pt,T)
             assert abs(np.sum(pt)-1.)<1.E-12
             if tint%intvl==0: # record occupation probabilities of specified states to array
                 pt_arr[:,tint/intvl] = [prob for k, prob in enumerate(pt) if statesmask[k]]
-        pt_traj_arr = None
-        if init_state_idx>0: # using an initial probability distribution localised at particular state, so can compare to trajectories
-            pt_traj_arr = self.read_counts_init_state(init_state_idx,stateslist,dlag,niter,intvl)
-        print "\n  p(t) array for selected states determined from propagation using estimated coarse-grained Markov chain:\n", pt_arr
+        pt_traj_arr = self.read_counts_init_state(initstate,stateslist,dlag,niter,intvl) # corresponding p(t) based on trajectory data
+        print "\n  p(t) array for selected states determined from propagation using reduced Markov chain:\n", pt_arr
         print "\n  p(t) array for selected states determined from trajectory data:\n", pt_traj_arr
         return pt_arr, pt_traj_arr, t_vec
 
-    ''' perform the Chapman-Kolmogorov test for the states listed in stateslist
-        That is, propagate an initial probability distribution localised in the current state under consideration, using the transition matrix T
-        estimated at lag time dlag*tau, up to time niter*dlag*tau.
-        For each initially occupied state, only the time-dependent probability of that state is considered.
-        The results are compared with the result from the trajectory data. '''
-    def chapman_kolmogorov_test(self,T,dlag,niter,intvl,stateslist):
-        print "\n\nperforming Chapman-Kolmogorov test...\n  propagating initial probability distributions %i times at intervals of %i, lag time = %f" \
+    ''' perform the Chapman-Kolmogorov relaxation test for trajectories initialised from each of the states specified in stateslist.
+        That is, for each state in stateslist, propagate an initial probability distribution localised in that state, and monitor the
+        relaxation of the occupation probability distribution for that state only (compare with chapman_kolmogorov_specinit() function). '''
+    def chapman_kolmogorov_relax(self,T,dlag,niter,intvl,stateslist):
+        print "\n\nperforming the Chapman-Kolmogorov relaxation test for %i states..." % len(stateslist)
+        print "  no. of iterations: %i      at intervals (multiple of lag time): %i      lag time = %1.2e" \
             % (niter,intvl,float(dlag)*self.tau)
-        pt_arr = np.zeros((len(stateslist),niter+1),dtype=float) # array of time-dependent occupation probabilities p(t) for specified states
-        pt_traj_arr = np.zeros((len(stateslist),niter+1),dtype=float) # corresponding p(t) based on trajectory data, results of read_counts_init_state() func are copied into slices of this array
-        t_vec = np.array([float(i*intvl*dlag)*self.tau for i in range(niter+1)])
+        pt_arr = np.zeros((len(stateslist),niter+1),dtype=float) # array of time-dependent occupation probabilities p(t) for each initial state
+         # corresponding p(t) based on trajectory data, results of read_counts_init_state() func are copied into slices of this array
+        pt_traj_arr = np.zeros((len(stateslist),niter+1),dtype=float)
+        t_vec = np.array([float(i*intvl*dlag)*self.tau for i in range(niter+1)]) # vector of corrseponding times
         for j, state_idx in enumerate(stateslist): # consider initial occupation probability localised in each of the specified states in turn
-            print "    performing CK test for state: %i" % (state_idx+1)
+            print "    performing CK test for relaxation of initial distribution localised in state: %i" % (state_idx+1)
             p0 = np.zeros(self.n_macrostates,dtype=float)
             p0[state_idx]=1.; pt_arr[j,0]=1.
             pt = p0.copy() # set time-dependent distribution to initial distribution
@@ -170,10 +161,10 @@ class Discotress_coarsegrainer(object):
                     pt_arr[j,tint/intvl] = pt[state_idx]
             # read in trajectory data and record the prob of the initially occupied state
             pt_traj_arr[j,:] = self.read_counts_init_state(state_idx,[state_idx],dlag,niter,intvl)[0,:].copy() # the call will return a (1xniter)-dimensional array
-        print "\n  p(t) array for selected states determined from propagation using estimated coarse-grained Markov chain:\n", pt_arr
-        print "\n  p(t) array for selected states determined from trajectory data:\n", pt_traj_arr
+        print "\n  p(t) array for the specified initial states determined from propagation using reduced Markov chain:\n", pt_arr
+        print "\n  p(t) array for the specified initial states determined from trajectory data:\n", pt_traj_arr
         return pt_arr, pt_traj_arr, t_vec
- 
+
     ''' read from trajectories starting from specified initial state and record probabilities for chosen states at time intervals '''
     def read_counts_init_state(self,init_state_idx,stateslist,dlag,niter,intvl):
         pt_traj_arr = np.zeros((len(stateslist),niter+1),dtype=int) # p(t) from trajectory data, is initially an array of counts (int)
@@ -233,7 +224,6 @@ class Discotress_coarsegrainer(object):
         T_eigvals, T_reigvecs = eig(T,left=True,right=False) # note that this calculates the (unnormalised) *right* eigenvectors because T is transposed
         T_eigvals, T_leigvecs = eig(T,left=False,right=True) # note that this calculates the (unnormalised) *left* eigenvectors because T is transposed
         T_eigvals, T_reigvecs, T_leigvecs = Discotress_coarsegrainer.check_sort_eigs(T_eigvals,T_reigvecs,T_leigvecs,self.pi_coarse)
-        print "    finished checking eigenvectors"
         corr_funcs_arr = np.zeros((len(corr_pairs),niter+1),dtype=float) # array of correlation function values
         t_vec = np.array([float(i*intvl*dlag)*self.tau for i in range(niter+1)]) # array of corresponding time values
         for j, corr_pair in enumerate(corr_pairs): # loop over specified pairs of eigenfunctions for which to calculate correlation functions
@@ -242,17 +232,22 @@ class Discotress_coarsegrainer(object):
             for i, lagt in enumerate(t_vec):
                 print "      multiple of lag time:", i*intvl
                 val=0. # value of correlation function at this lag time
-                for dtraj in self.dtrajs: # loop over all trajectories
+                k_tot=0
+                for quack, dtraj in enumerate(self.dtrajs): # loop over all trajectories
                     k=0
                     while k+(i*intvl*dlag) < np.shape(dtraj)[0]: # process trajectory in shifting window until total trajectory time is met
                         val += T_leigvecs[corr_pair[1],dtraj[k+(i*intvl*dlag)]]*T_leigvecs[corr_pair[0],dtraj[k]]
-                        k += 1
-                    val *= 1./float(k)
-                    corr_funcs_arr[j,i] += val # /float(np.shape(self.dtrajs[0]))
-            corr_funcs_arr[j,:] *= 1./np.sum(self.ntrajs_list)
+                        k += dlag # can change to k += 1 to use all trajectory data in a shifting window, but faster to shift window along by dlag
+                    val *= 1./float(k/dlag)
+                    corr_funcs_arr[j,i] += val
+                    if quack==0: print "k/dlag:", k/dlag
+                    k_tot += k/dlag
+                print k_tot
+            corr_funcs_arr[j,:] *= 1./float(np.sum(self.ntrajs_list))
             if corr_pair[0]==corr_pair[1]: # expect single-exponential decay behaviour, otherwise values are strictly zero due to orthonormality of left eigenvectors
                 print "\n  array of correlation function values determined from eigenspectrum of estimated coarse-grained Markov chain:\n", \
                     np.array([np.exp((1./(float(dlag)*tau))*np.log(T_eigvals[corr_pair[0]])*t) for t in t_vec])
+#                corr_funcs_arr[j,:] *= 1./corr_funcs_arr[j,0] # quack shouldnt have to explicit normalise
             print "\n  array of correlation function values determined from trajectory data:\n", corr_funcs_arr[j,:]
         return corr_funcs_arr, t_vec, T_eigvals
 
@@ -333,7 +328,7 @@ class Discotress_coarsegrainer(object):
 #        ctmc_obj = ContinuousTimeMSM()
         ctmc_obj = CTMC_MLE_Obj()
         ctmc_obj.n_states_ = self.n_macrostates
-        ctmc_obj.countsmat_ = self.get_counts_mtx()
+        ctmc_obj.countsmat_ = self.get_basic_counts_mtx()
         ctmc_obj.lag_time = self.tau
         return ctmc_obj
 
@@ -410,7 +405,8 @@ class Discotress_coarsegrainer(object):
         satisfy normalisation conditions)
         note also that the left and right eigenvector arrays become transposed '''
     @staticmethod
-    def check_sort_eigs(eigvals,reigvecs,leigvecs,stat_distribn):
+    def check_sort_eigs(eigvals,reigvecs,leigvecs,stat_distribn,tol=1.E-08):
+        print "    checking orthonormality of left and right eigenvectors"
         n_states = np.shape(reigvecs)[0]
         reigvecs = np.array([eigvec for _, eigvec in sorted(zip(list(eigvals),list(np.transpose(reigvecs))), \
             key=lambda pair: pair[0], reverse=True)],dtype=float)
@@ -429,19 +425,27 @@ class Discotress_coarsegrainer(object):
         for i in range(n_states):
             reigvecs[i,:] *= 1./sqrt(tmp_arr_right[i,i])
             leigvecs[i,:] *= 1./sqrt(tmp_arr_left[i,i])
+        print "\nreigvecs:\n", reigvecs
+        print "\nleigvecs:\n", leigvecs
+        # note that the signs of the arrays containing left and right eigenvectors is arbitrary
+        for i in range(n_states): assert abs(np.absolute(reigvecs[0,i])-stat_distribn[i])<tol # check consistency with prescribed stationary distribution
+        if (reigvecs[0,0])<0.: reigvecs = -1.*reigvecs # use convention that stationary vector has positive elements
+        if (leigvecs[0,0])<0.: leigvecs = -1.*leigvecs # likewise for dominant left eigenvector (which should have uniform elements)
         # various checks for normalisation and orthogonality of left and right eigenvectors
-        for i in range(n_states): assert abs(reigvecs[0,i]-stat_distribn[i])<1.E-08
+        for i in range(n_states): assert abs(np.absolute(reigvecs[0,i])-stat_distribn[i])<tol # note reigvecs may have opposite sign
         for i in range(n_states):
-            assert abs(np.sum(reigvecs[i,:])-(lambda i: 1. if i==0 else 0.)(i))<1.E-10
-            assert abs(np.dot(stat_distribn,leigvecs[i,:])-(lambda i: 1. if i==0 else 0.)(i))<1.E-10
+            assert abs(np.sum(reigvecs[i,:])-(lambda i: 1. if i==0 else 0.)(i))<tol
+            assert abs(np.dot(stat_distribn,leigvecs[i,:])-(lambda i: 1. if i==0 else 0.)(i))<tol
             for j in range(n_states):
                 if i==j: continue
-                assert abs(tmp_arr_right[i,j])<1.E-10
-                assert abs(tmp_arr_left[i,j])<1.E-10
+                assert abs(tmp_arr_right[i,j])<tol
+                assert abs(tmp_arr_left[i,j])<tol
+        print "    finished checking eigenvectors"
+        quit()
         return eigvals, reigvecs, leigvecs
 
-    ''' construct the count matrix from discretised trajectories '''
-    def get_counts_mtx(self):
+    ''' construct a basic count matrix from discretised trajectories (does NOT calculate sliding window/effective counts) '''
+    def get_basic_counts_mtx(self):
         cmtx = np.zeros(shape=(self.n_macrostates,self.n_macrostates),dtype=int)
         for dtraj in self.dtrajs:
             prev_comm = dtraj[0]
@@ -454,28 +458,27 @@ class Discotress_coarsegrainer(object):
 if __name__=="__main__":
 
     ### SET PARAMS FOR ESTIMATION ###
-    n_macrostates = 11 # number of macrostates in the kPS simulation of the original Markov chain / number of microstates of the reduced Markov chain
-    tau = 1.E+04 # lag time (or "tintvl") to read in trajectory data
-    trajtime = 1.E+07 # read in data up until this time (which must be met) for *all* trajectories (note that trajectories may exceed this length in time)
-    dlag = 2 # integer multiple of lag time at which trajectory data is interpreted (ie the lag time of the transition matrix is dlag*tau)
+    n_macrostates = 4 # number of macrostates in the kPS simulation of the original Markov chain / number of microstates of the reduced Markov chain
+    tau = 5.E+05 # lag time (or "tintvl") to read in trajectory data
+    trajtime = 1.E+09 # read in data up until this time (which must be met) for *all* trajectories (note that trajectories may exceed this length in time)
+    dlag = 20 # integer multiple of lag time at which trajectory data is interpreted (ie the lag time of the transition matrix is dlag*tau)
     ntrajs_list = Discotress_coarsegrainer.read_single_col("ntrajs.dat",int)
     ### SET PARAMS FOR TESTS, ANALYSIS, AND PLOTS ###
     # implied timescale convergence test
     dlag_min = 1 # min dlag in testing for convergence of implied timescales
-    dlag_max = 21 # max dlag in testing for convergence of implied timescales
-    dlag_intvl = 2 # interval (multiple of base lag time) in testing for convergence of implied timescales
-    n_timescales = 8 # number of dominant implied timescales to compute
-    # Chapman-Kolmogorov test / propagation of occupation probability distribution
-    niter_ck = 15 # number of iterations in the Chapman-Kolmogorov test / propagation
-    tintvl_ck = 2 # time interval (multiple of lag time) for recording p(t) in Chapman-Kolmogorov test / propagation
-    state_idx = 3 # initial probability distribution in propagation of p(t) is localised in this state
-    p0 = None # alternatively to providing a state_idx for the propagation of p(t), can specify an arbitrary initial probability distribution
-    stateslist = [0,3,5,8] # list of states to plot the occupation probability distributions for in the CK test (or p(t) propagation) (indexed from zero)
+    dlag_max = 15 # max dlag in testing for convergence of implied timescales
+    dlag_intvl = 1 # interval (multiple of base lag time) in testing for convergence of implied timescales
+    n_timescales = 8 # number of dominant implied timescales to compute (not incl dominant ie infinite timescale)
+    # Chapman-Kolmogorov test / propagation of time-dependent occupation probability distributions p(t)
+    niter_ck = 20 # number of iterations in the CK test
+    tintvl_ck = 5 # time interval (multiple of lag time) for recording p(t) in CK test
+    initstateslist = [0,1,2,3] # consider initial probability distributions localised in each of these states in turn
+    recdstateslist = [0,1,2,3] # for a specified initial state (i.e. each of those listed in initstateslist), record p(t) for these states
     # correlation function test
     niter_cf = 15 # number of iterations in the correlation function test
-    tintvl_cf = 4 # interval of lag times for correlation function test
+    tintvl_cf = 2 # interval of lag times for correlation function test
     # pairs of dominant eigenvectors (indexed from 0) [i,j] for which to compute correlation functions. i=j and i=/=j are auto- and cross-correlation funcs, respectively
-    corr_pairs = [[2,2],[4,4],[2,3]]
+    corr_pairs = [[1,1],[2,2],[2,3]]
 
 
     ### RUN ###
@@ -495,17 +498,18 @@ if __name__=="__main__":
 
     ### TESTS AND PLOTS ###
     # implied timescale test
-    implt_arr, dlag_vec = dcg1.calc_implied_timescales(dlag_min,dlag_max,dlag_intvl,n_timescales=n_timescales)
-    dcg1.implied_timescales_plot(implt_arr,dlag_vec)
+#    implt_arr, dlag_vec = dcg1.calc_implied_timescales(dlag_min,dlag_max,dlag_intvl,n_timescales=n_timescales)
+#    dcg1.implied_timescales_plot(implt_arr,dlag_vec)
 
-    # propagate time-dependent probability distribution p(t) for several states given initial condition
-    pt_arr, pt_traj_arr, pt_t_vec = dcg1.propagate_ptdistribn(T,dlag,niter_ck,tintvl_ck,stateslist,state_idx)
-    dcg1.plot_ck_test(pt_arr,pt_traj_arr,pt_t_vec,tintvl_ck,stateslist)
+    # Chapman-Kolmogorov test; monitor relaxation of the occupation probability distributions for the specified initial states
+#    pt_arr, pt_traj_arr, pt_t_vec = dcg1.chapman_kolmogorov_relax(T,dlag,niter_ck,tintvl_ck,initstateslist)
+#    dcg1.plot_ck_test(pt_arr,pt_traj_arr,pt_t_vec,tintvl_ck,initstateslist)
 
-    # Chapman-Kolmogorov test
-    ck_arr, ck_traj_arr, ck_t_vec = dcg1.chapman_kolmogorov_test(T,dlag,niter_ck,tintvl_ck,stateslist)
-    dcg1.plot_ck_test(ck_arr,ck_traj_arr,ck_t_vec,tintvl_ck,stateslist)
+    # Chapman-Kolmogorov test; monitor evolution of the occupation probability distributions for several states given a specified initial state
+    for state_idx in initstateslist:
+        ck_arr, ck_traj_arr, ck_t_vec = dcg1.chapman_kolmogorov_specinit(T,dlag,niter_ck,tintvl_ck,state_idx,recdstateslist)
+        dcg1.plot_ck_test(ck_arr,ck_traj_arr,ck_t_vec,tintvl_ck,recdstateslist)
 
     # correlation function test
-    corr_funcs_arr, t_vec, T_eigvals = dcg1.correlation_func_test(T,dlag,niter_cf,tintvl_cf,corr_pairs)
-    dcg1.plot_corrfunc_test(corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau*float(dlag),niter_cf,tintvl_cf)
+#    corr_funcs_arr, t_vec, T_eigvals = dcg1.correlation_func_test(T,dlag,niter_cf,tintvl_cf,corr_pairs)
+#    dcg1.plot_corrfunc_test(corr_funcs_arr,t_vec,T_eigvals,corr_pairs,tau*float(dlag),niter_cf,tintvl_cf)
