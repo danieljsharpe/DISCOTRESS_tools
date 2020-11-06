@@ -5,26 +5,27 @@ in turn), and estimate and validate a coarse-grained Markov chain. Functionality
   -estimate a reversible coarse-grained continuous-time Markov chain with fixed stationary distribution by maximum-likelihood method (uses a modified version of some MSMBuilder scripts, no requirements)
   -perform implied timescale, Chapman-Kolmogorov and correlation function tests
 
-Reads from files:
- walker.x.y.dat, communities.dat, stat_prob.dat, ntrajs.dat (refer to DISCOTRESS documentation for more detail)
+Reads from files: (refer to DISCOTRESS documentation for more detail)
+ - walker.x.y.dat (only the first second and third columns of the traj files are relevant; cols 1-3 are:  node ID / community ID / time)
+ - communities.dat, stat_prob.dat, ntrajs.dat
 
 References:
-[1] D. J. Sharpe and D. J. Wales, Dimensionality reduction of Markovian networks using efficient dynamical simulations (in preparation)
-[2] B. Trendelkamp-Schroer, H. Wu, F. Paul, and F. Noe, J. Chem. Phys. 143, 174101 (2015).
-[3] B. Trendelkamp-Schroer and F. Noe, J. Chem. Phys. 138, 164113 (2013).
-[4] R. T. McGibbon and V. S. Pande, J. Chem. Phys. 143, 034109 (2015).
-[5] M. K. Schrerer et al., J. Chem. Theory Comput. 11, 5525-5542 (2015).
-[6] M. P. Harrigan et al., Biophys. J. 112, 10-15 (2017).
-[7] J.-H. Prinz et al., J. Chem. Phys. 134, 174105 (2011).
-[8] N.-V. Buchete and G. Hummer,  J. Phys. Chem. B 112, 6057-6069 (2008).
+ [1] D. J. Sharpe and D. J. Wales, Dimensionality reduction of Markovian networks using efficient dynamical simulations (in preparation)
+ [2] B. Trendelkamp-Schroer, H. Wu, F. Paul, and F. Noe, J. Chem. Phys. 143, 174101 (2015).
+ [3] B. Trendelkamp-Schroer and F. Noe, J. Chem. Phys. 138, 164113 (2013).
+ [4] R. T. McGibbon and V. S. Pande, J. Chem. Phys. 143, 034109 (2015).
+ [5] M. K. Schrerer et al., J. Chem. Theory Comput. 11, 5525-5542 (2015).
+ [6] M. P. Harrigan et al., Biophys. J. 112, 10-15 (2017).
+ [7] J.-H. Prinz et al., J. Chem. Phys. 134, 174105 (2011).
+ [8] N.-V. Buchete and G. Hummer,  J. Phys. Chem. B 112, 6057-6069 (2008).
     
 If you use these methods, please cite the relevant publications:
--dimensionality reduction of Markov chains with DISCOTRESS: [1]
--maximum-likelihood estimation of reversible DTMCs with fixed stationary distribution: [2], [5]
--Gibbs sampling of reversible DTMCs with fixed stationary distribution: [2], [3], [5]
--maximum-likelihood estimations of reversible CTMCs: [4], [6]
--Chapman-Kolmogorov and implied timescale tests: [7]
--correlation function test: [8]
+ -dimensionality reduction of Markov chains with DISCOTRESS: [1]
+ -maximum-likelihood estimation of reversible DTMCs with fixed stationary distribution: [2], [5]
+ -Gibbs sampling of reversible DTMCs with fixed stationary distribution: [2], [3], [5]
+ -maximum-likelihood estimations of reversible CTMCs: [4], [6]
+ -Chapman-Kolmogorov and implied timescale tests: [7]
+ -correlation function test: [8]
 
 
 Daniel J. Sharpe
@@ -348,7 +349,7 @@ class Discotress_coarsegrainer(object):
             for j in range(ntrajs_list[i]): # loop over individual trajectories starting from this macrostate
                 walker_f =  open("walker."+str(i)+"."+str(j)+".dat","r")
                 # read in all communities and times data
-                trajdata = [(int(line.split()[1]),float(line.split()[3])) for line in walker_f.readlines()]
+                trajdata = [(int(line.split()[1]),float(line.split()[2])) for line in walker_f.readlines()]
                 walker_f.close()
                 prev_comm = trajdata[0][0]
                 t=0. # next time for which the occupied macrostate is to be recorded

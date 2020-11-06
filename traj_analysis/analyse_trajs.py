@@ -6,6 +6,7 @@ Daniel J. Sharpe
 Mar 2020
 '''
 
+from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import os
@@ -78,7 +79,7 @@ class Analyse_trajs(object):
                 curr_tbin_idx=0
                 last_supstate=None
                 walker_f=open(self.cwd+walker_fname,"r")
-                print "reading info for walker: ", wid
+                print("reading info for walker: ",wid)
                 for line in walker_f.readlines():
                     node_id=int(line.split()[0])
                     supstate=superstates[node_id-1]
@@ -86,7 +87,7 @@ class Analyse_trajs(object):
                     if self.logtime:
                         if t<1.: t=1. # if logtime, round values <1. to 1., for easier interpretation
                         t=np.log10(t)
-#                    print "time: ", t, " bin_idx: ", curr_tbin_idx, " bin_val: ", self.tbinvals[curr_tbin_idx]
+#                    print("time: ", t, " bin_idx: ", curr_tbin_idx, " bin_val: ", self.tbinvals[curr_tbin_idx])
                     if self.tbinvals[curr_tbin_idx]>t: # not yet reached next bin increment - only take the first time the bin is seen
                         last_supstate=supstate
                         continue # skip to next recorded node
@@ -108,7 +109,7 @@ class Analyse_trajs(object):
             self.probdistribn[:,i] *= 1./np.sum(self.probdistribn[:,i])
             assert abs(np.sum(self.probdistribn[:,i])-1.)<1.E-08
 #        for i in range(self.nsupstates):
-#            print self.probdistribn[i,:]
+#            print(self.probdistribn[i,:])
 
     # plot trajectories against a given order parameter
     def plot_trajs(self,nxticks,nyticks,op_fname,op_minval,op_maxval,figfmt="pdf"):
@@ -120,7 +121,7 @@ class Analyse_trajs(object):
             walker_f=open("walker.0."+str(wid)+".dat","r")
             for line in walker_f.readlines():
                 node_id=int(line.split()[0])
-                t=float(line.split()[3])
+                t=float(line.split()[2])
                 if self.logtime:
                     if t<1.: t=1. # if logtime, round values <1. to 1., for easier interpretation
                     t=np.log10(t)
