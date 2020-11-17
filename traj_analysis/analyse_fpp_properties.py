@@ -44,7 +44,8 @@ class Analyse_fpp_properties(object):
         self.vals=np.array(vals,dtype=float)
         return hist_arr
 
-    def plot_hist(self,hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="pdf",color="blue",xtick_dp=0,ytick_dp=2):
+    def plot_hist(self,hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="pdf",color="cornflowerblue",xtick_dp=0,ytick_dp=2,
+                  linevals=None,linecolor="deeppink"):
         hist_arr=hist_arr.astype(np.float64)*1./float(self.ntpaths) # normalise
         bins=[self.bin_min+(i*self.binw) for i in range(self.nbins)]
         plt.figure(figsize=(10.,7.)) # size in inches
@@ -55,6 +56,9 @@ class Analyse_fpp_properties(object):
         else:
             plt.xlabel("$"+fpd_name+"$",fontsize=42)
             plt.ylabel("$p("+fpd_name+")$",fontsize=42)
+        if linevals is not None:
+            plt.vlines(linevals,0.,ymax,colors=linecolor,linewidths=6.,linestyles="dashed")
+        plt.savefig("fp_distribn."+figfmt,format=figfmt,bbox_inches="tight")
         ax = plt.gca()
         ax.set_xlim([self.bin_min,self.bin_max])
         ax.set_ylim([0.,ymax])
@@ -101,19 +105,21 @@ if __name__=="__main__":
 
     # statistic to analyse
     # 0=time, 1=dynamical activity (path length), 2=-ln(path prob) [path action], 3=entropy flow
-    stat=0
+    stat=2
 
     # binning params
 
     nbins=50
-    binw=0.2
-    bin_min=0.
+    binw=0.1
+    bin_min=0.  # 18.
     binall=False # enforce that all values must be encompassed in the bin range
-    logvals=False # take log_10 of values
+    logvals=True # take log_10 of values
     # plot params
     nxticks=10 # no. of ticks on x axis
     nyticks=10 # no. of ticks on y axis
-    ymax=0.25 # max value for y (prob) axis
+    ymax=0.1 # max value for y (prob) axis
+    # can add one or more vertical lines to plot (e.g. to indicate mean value)
+    linevals = np.array([3646.89402349])
 
     # run
     calc_hist_obj=Analyse_fpp_properties(stat,nbins,binw,bin_min,binall,logvals)
@@ -130,9 +136,10 @@ if __name__=="__main__":
     print("standard error in MFPT:\t\t\t",std_err)
     print("standard error in var:\t\t\t",var_fptd*sqrt(2./(calc_hist_obj.ntpaths-1.)))
     # plot
+    if logvals: linevals = np.log10(linevals)
     fpd_name=None
     if stat==0: fpd_name = "t_\mathrm{FPT}"
     elif stat==1: fpd_name = "\mathcal{L}"
     elif stat==2: fpd_name = "- \ln \mathcal{P}"
     elif stat==3: fpd_name = "\mathcal{S} / k_\mathrm{B}"
-    calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="svg",color="deeppink",ytick_dp=3)
+    calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="svg",xtick_dp=1,ytick_dp=3,linevals=linevals)
