@@ -2,6 +2,8 @@
 Python script to analyse the probability distributions of dynamical quantities in the first passage path ensemble. These statistics are
 printed to the "fpp_properties.dat" output file from DISCOTRESS. Namely: the first passage time (FPT) distribution, and the path length,
 path action (i.e. negative of log path probability), and path entropy flow distributions.
+The script plots a histogram of the probability distribution and calculates the mean and variance of the distribution (and the associated
+standard errors) for the chosen first passage path property.
 
 Daniel J. Sharpe
 Jan 2020
@@ -16,7 +18,7 @@ from math import sqrt
 class Analyse_fpp_properties(object):
 
     def __init__(self,stat,nbins,binw,bin_min,binall,logvals):
-        if stat<0 or stat>3: raise RuntimeError
+        if stat<1 or stat>4: raise RuntimeError
         self.stat=stat
         self.nbins=nbins
         self.binw=binw
@@ -32,7 +34,7 @@ class Analyse_fpp_properties(object):
         vals=[]
         with open("fpp_properties.dat","r") as pathprops_f:
             for line in pathprops_f.readlines():
-                val=float(line.split()[stat+1])
+                val=float(line.split()[stat])
                 if self.logvals: val=np.log10(val)
                 vals.append(val)
                 if not (val>=self.bin_max or val<self.bin_min):
@@ -104,8 +106,8 @@ if __name__=="__main__":
     ### CHOOSE PARAMS ###
 
     # statistic to analyse
-    # 0=time, 1=dynamical activity (path length), 2=-ln(path prob) [path action], 3=entropy flow
-    stat=2
+    # 1=time, 2=dynamical activity (path length), 3=-ln(path prob) [path action], 4=entropy flow
+    stat=1
 
     # binning params
 
@@ -138,8 +140,9 @@ if __name__=="__main__":
     # plot
     if logvals: linevals = np.log10(linevals)
     fpd_name=None
-    if stat==0: fpd_name = "t_\mathrm{FPT}"
-    elif stat==1: fpd_name = "\mathcal{L}"
-    elif stat==2: fpd_name = "- \ln \mathcal{P}"
-    elif stat==3: fpd_name = "\mathcal{S} / k_\mathrm{B}"
+    if stat==1: fpd_name = "t_\mathrm{FPT}"
+    elif stat==2: fpd_name = "\mathcal{L}"
+    elif stat==3: fpd_name = "- \ln \mathcal{P}"
+    elif stat==4: fpd_name = "\mathcal{S} / k_\mathrm{B}"
+    else: quit("error in choice of stat")
     calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="svg",xtick_dp=1,ytick_dp=3,linevals=linevals)
