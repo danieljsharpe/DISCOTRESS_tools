@@ -60,7 +60,6 @@ class Analyse_fpp_properties(object):
             plt.ylabel("$p("+fpd_name+")$",fontsize=42)
         if linevals is not None:
             plt.vlines(linevals,0.,ymax,colors=linecolor,linewidths=6.,linestyles="dashed")
-        plt.savefig("fp_distribn."+figfmt,format=figfmt,bbox_inches="tight")
         ax = plt.gca()
         ax.set_xlim([self.bin_min,self.bin_max])
         ax.set_ylim([0.,ymax])
@@ -107,21 +106,21 @@ if __name__=="__main__":
 
     # statistic to analyse
     # 1=time, 2=dynamical activity (path length), 3=-ln(path prob) [path action], 4=entropy flow
-    stat=1
+    stat=3
 
     # binning params
 
-    nbins=50
+    nbins=40
     binw=0.1
-    bin_min=0.  # 18.
+    bin_min=1.
     binall=False # enforce that all values must be encompassed in the bin range
     logvals=True # take log_10 of values
     # plot params
-    nxticks=10 # no. of ticks on x axis
+    nxticks=8 # no. of ticks on x axis
     nyticks=10 # no. of ticks on y axis
     ymax=0.1 # max value for y (prob) axis
     # can add one or more vertical lines to plot (e.g. to indicate mean value)
-    linevals = np.array([3646.89402349])
+    linevals = np.array([3.612046E+03])
 
     # run
     calc_hist_obj=Analyse_fpp_properties(stat,nbins,binw,bin_min,binall,logvals)
@@ -133,10 +132,10 @@ if __name__=="__main__":
     var_fptd = calc_hist_obj.calc_var_fptd()
     std_err = calc_hist_obj.calc_stderr_mfpt(mfpt)
     std_dev=sqrt(var_fptd)
-    print("\nmean of FPT distribution (MFPT):\t",mfpt)
-    print("variance of FPT distribution:\t\t",var_fptd)
-    print("standard error in MFPT:\t\t\t",std_err)
-    print("standard error in var:\t\t\t",var_fptd*sqrt(2./(calc_hist_obj.ntpaths-1.)))
+    print("\nmean of FPT distribution (MFPT):\t","{:.6e}".format(mfpt))
+    print("variance of FPT distribution:\t\t","{:.6e}".format(var_fptd))
+    print("standard error in MFPT:\t\t\t","{:.6e}".format(std_err))
+    print("standard error in var:\t\t\t","{:.6e}".format(var_fptd*sqrt(2./(calc_hist_obj.ntpaths-1.))))
     # plot
     if logvals: linevals = np.log10(linevals)
     fpd_name=None
@@ -145,4 +144,4 @@ if __name__=="__main__":
     elif stat==3: fpd_name = "- \ln \mathcal{P}"
     elif stat==4: fpd_name = "\mathcal{S} / k_\mathrm{B}"
     else: quit("error in choice of stat")
-    calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="svg",xtick_dp=1,ytick_dp=3,linevals=linevals)
+    calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="pdf",xtick_dp=1,ytick_dp=2,linevals=linevals)
