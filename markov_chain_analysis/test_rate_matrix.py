@@ -10,6 +10,7 @@ on the network - for a 'well-behaved' network this should rediscover the communi
 eigenvalues of the coarse transition matrix.)
 '''
 
+from __future__ import print_function
 import numpy as np
 from scipy.linalg import expm
 from scipy.sparse.linalg import eigs
@@ -46,7 +47,7 @@ dump_network = False # write the graph to files and quit Y/N
 # as p*n_V -> c > 1, then the graph will almost surely have a single large connected
 # component of order n_V (percolation transition threshold exceeded)
 
-print "\nlag time: ", tau, "\tno. of vertices", n_V, "\tno. of communities", n_C
+print("\nlag time: ", tau, "\tno. of vertices", n_V, "\tno. of communities", n_C)
 
 np.random.seed(seed)
 # equal no. of vertices in each community
@@ -68,7 +69,7 @@ for i in range(n_V):
 for i in range(n_V):
     K[i,i] = -np.sum(K[i,:])
 
-# print "Transition rate matrix K:\n", K
+# print("Transition rate matrix K:\n", K)
 
 # transition matrix is matrix exponential of transition rate matrix and is estimated at a lag time tau
 T = expm(tau*K)
@@ -76,7 +77,7 @@ T = expm(tau*K)
 # eigenvalues are the same as the corresponding row-stochastic matrix.
 
 # rows of transition matrix must sum to unity
-# print "Transition matrix T:\n", T
+# print("Transition matrix T:\n", T)
 for i in range(n_V):
     assert abs(np.sum(T[i,:])-1.) < 1.0E-10, "Error, row %i of transition matrix does not sum to 1" % i
 
@@ -86,7 +87,7 @@ for i in range(n_V):
 # stationary probability (pi). All other eigenvalues are < 0.
 K_evals, K_evecs = eigs(K,k,which="SM")
 pi = np.array(K_evecs[:,0]*(1./np.sum(K_evecs[:,0])),dtype=float)
-# print "stationary distribution pi:\n", pi
+# print("stationary distribution pi:\n", pi)
 assert abs(np.sum(pi)-1.) < 1.0E-10, "Error, node stationary probabilities do not sum to 1"
 
 if dump_network:
@@ -111,12 +112,12 @@ balance = True
 for i in range(n_V):
     for j in range(i+1,n_V):
         if abs((K[i,j]*pi[i])-K[j,i]*pi[j]) < 1.0E-10:
-            print "Detailed balance is NOT satisfied"
+            print("Detailed balance is NOT satisfied")
             balance = False
             break
     if not balance: break
 if balance:
-    print "Detailed balance IS satisfied"
+    print("Detailed balance IS satisfied")
 
 # calculate k eigenvectors and eigenvalues of transition matrix by the Lanczos algorithm (a power method)
 T_evals, T_evecs = eigs(T,k)
@@ -169,15 +170,15 @@ for i in range(n_V):
         K_C[c_idx[i],c_idx[j]] += (pi[i]/pi_C[c_idx[i]])*K[i,j]
 for i in range(n_C):
     K_C[i,i] = -np.sum(K_C[i,:])
-print "\ninitial coarse-grained transition rate matrix K_C:\n", K_C
+print("\ninitial coarse-grained transition rate matrix K_C:\n", K_C)
 K_C_evals, K_C_evecs = np.linalg.eig(K_C)
 
 # calculate and process coarse-grained transition matrix
 T_C = expm(tau_C*K_C)
-print "initial coarse-grained transition matrix T_C:\n", T_C
+print("initial coarse-grained transition matrix T_C:\n", T_C)
 for i in range(n_C):
     assert abs(np.sum(T_C[i,:])-1.) < 1.0E-08, "Error, row %i of coarse transition matrix does not sum to 1" % i
-print "initial stationary distribution vector pi:\n", pi_C
+print("initial stationary distribution vector pi:\n", pi_C)
 # NB coarse matrix is small enough to calculate all eigenvectors, so not using power method here
 T_C_evals, T_C_evecs = np.linalg.eig(T_C)
 T_C_evecs = np.transpose(T_C_evecs)
@@ -209,7 +210,7 @@ n_success = 0
 T_C_eval2_curr = T_C_evals[1]
 eval_K_prog_f = open("eval_K_prog.dat","w+")
 eval_T_prog_f = open("eval_T_prog.dat","w+")
-print "\n\nBeginning variational optimisation of second dominant eigenvalue of transition matrix...\n"
+print("\n\nBeginning variational optimisation of second dominant eigenvalue of transition matrix...\n")
 while n_it < n_it_var:
     K_C_var_old = deepcopy(K_C_var)
     T_C_var_old = deepcopy(T_C_var)
@@ -287,7 +288,7 @@ while n_it < n_it_var:
         char_t_C_var = deepcopy(char_t_C_var_old)
         c_idx_var = deepcopy(c_idx_var_old)
     else: # second eigenvalue of transition matrix has increased, accept change
-        print n_it, "\taccepting change:", T_C_var_evals[1], T_C_eval2_curr
+        print(n_it, "\taccepting change:", T_C_var_evals[1], T_C_eval2_curr)
         T_C_eval2_curr = T_C_var_evals[1]
         n_success += 1
     # append the eigenvalues of the coarse transition and rate matrices to data files recording progress
@@ -303,11 +304,11 @@ while n_it < n_it_var:
 
 eval_T_prog_f.close()
 eval_K_prog_f.close()
-print "\nNumber of successful community updates:", n_success
-print "Number of nodes in each community:"
+print("\nNumber of successful community updates:", n_success)
+print("Number of nodes in each community:")
 n_comm = [0]*n_C
 for i in range(n_V): n_comm[c_idx_var[i]] += 1
-print n_comm
+print(n_comm)
 
 char_t_C_var = get_timescales(T_C_var_evals,tau_C)
 with open("char_times.var.dat","w") as ct_f:
@@ -320,6 +321,6 @@ with open("evals_K.var.dat","w") as eval_K_f:
     for K_C_eval in K_C_var_evals:
         eval_K_f.write("%1.14f\n" % K_C_eval)
 
-print "K_C is now:\n", K_C_var
-print "\nT_C is now:\n", T_C_var
-print "\npi_C is now:\n", pi_C_var
+print("K_C is now:\n", K_C_var)
+print("\nT_C is now:\n", T_C_var)
+print("\npi_C is now:\n", pi_C_var)

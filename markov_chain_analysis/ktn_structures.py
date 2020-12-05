@@ -5,6 +5,7 @@ Daniel J. Sharpe
 Sep 2019
 '''
 
+from __future__ import print_function
 import numpy as np
 from os.path import exists
 from copy import copy
@@ -74,7 +75,7 @@ class Node(object):
 
     @tpt_vals.deleter
     def tpt_vals(self):
-        print "deleting tpt_vals for node", self.node_id
+        print("deleting tpt_vals for node", self.node_id)
         self.qf, self.qb, self.mr, self.t, self.k_esc = [None]*5
 
     @staticmethod
@@ -314,7 +315,7 @@ class Ktn(object):
             node_alt = other_ktn.nodelist[i]
             node.pi = np.log((np.exp(node.pi)+np.exp(node_alt.pi))/2.)
             node.t = (node.t+node_alt.t)/2.
-            print i, node.t, self.nodelist[i].t, node_alt.t, (node.t+node_alt.t)/2.
+            print(i, node.t, self.nodelist[i].t, node_alt.t, (node.t+node_alt.t)/2.)
             n_out_edges = len(node.edgelist_out)
             node.edgelist_out = sorted(node.edgelist_out,key=lambda x: x.to_node.node_id)
             node_alt_edgelist_out = sorted(node_alt.edgelist_out,key=lambda x: x.to_node.node_id)
@@ -350,19 +351,18 @@ class Ktn(object):
         return new_ktn
 
     def construct_ktn(self,comms,conns,pi,k,t,node_ens,ts_ens):
-        if ((len(node_ens)!=self.n_nodes) or (len(ts_ens)!=self.n_edges) or (len(comms)!=self.n_nodes) \
-            or (len(conns)!=self.n_edges) or (len(pi)!=self.n_nodes) \
-            or (len(k)!=2*self.n_edges)): raise AttributeError
-        if t[0]!=None: self.tau=0. # indicates that transition probabilities are set but lag time is unknown
+        if (len(comms)!=self.n_nodes or len(conns)!=self.n_edges or len(pi)!=self.n_nodes \
+            or len(k)!=self.n_edges): raise AttributeError
+        if t is None: self.tau=0. # transition probabilities have not been set
         for i in range(self.n_nodes):
             if comms[i] > self.n_comms-1: raise AttributeError
             self.nodelist[i].node_attribs = [node_ens[i],comms[i],pi[i]]
             self.nodelist[i].t = t[i]
         for i in range(self.n_edges):
-            self.edgelist[2*i].edge_attribs = [ts_ens[i],k[2*i]]
-            self.edgelist[2*i].t = t[self.n_nodes+(2*i)]
-            self.edgelist[(2*i)+1].edge_attribs = [ts_ens[i],k[(2*i)+1]]
-            self.edgelist[(2*i)+1].t = t[self.n_nodes+((2*i)+1)]
+            self.edgelist[2*i].edge_attribs = [ts_ens[i],k[i][0]]
+            self.edgelist[(2*i)+1].edge_attribs = [ts_ens[i],k[i][1]]
+            self.edgelist[2*i].t = t[i][0]
+            self.edgelist[(2*i)+1].t = t[i][1]
             # set edge connectivity
             self.edgelist[2*i].to_from_nodes = ([self.nodelist[conns[i][1]-1],self.nodelist[conns[i][0]-1]],True)
             self.edgelist[(2*i)+1].to_from_nodes = ([self.nodelist[conns[i][0]-1],self.nodelist[conns[i][1]-1]],False)
@@ -383,19 +383,19 @@ class Ktn(object):
     @staticmethod
     def read_ktn_info(n_nodes,n_edges,ktn_id=""):
         comms = Ktn.read_single_col("communities"+ktn_id+".dat",n_nodes)
-        conns = Ktn.read_double_col("ts_conns"+ktn_id+".dat",n_edges)
+        conns = Ktn.read_double_col("edge_conns"+ktn_id+".dat",n_edges)
         pi = Ktn.read_single_col("stat_prob"+ktn_id+".dat",n_nodes,fmt="longfloat")
-        k = Ktn.read_single_col("ts_weights"+ktn_id+".dat",2*n_edges,fmt="longfloat")
-        t = Ktn.read_single_col("ts_probs"+ktn_id+".dat",n_nodes+(2*n_edges),fmt="longfloat")
+        k = Ktn.read_double_col("edge_weights"+ktn_id+".dat",n_edges,fmt="longfloat")
+        t = Ktn.read_double_col("edge_probs"+ktn_id+".dat",n_edges,fmt="longfloat") # optional
         node_ens = Ktn.read_single_col("node_ens"+ktn_id+".dat",n_nodes,fmt="float") # optional
         ts_ens = Ktn.read_single_col("ts_ens"+ktn_id+".dat",n_edges,fmt="float") # optional
         return comms, conns, pi, k, t, node_ens, ts_ens
 
     ''' read forward and backward committor functions from files and update Ktn data structure '''
     def read_committors(self):
-        if not exists("qf_"+self.ktn_id.strip("_")+".dat") or not exists("qb_"+self.ktn_id.strip("_")+".dat"): raise RuntimeError
-        qf = Ktn.read_single_col("qf_"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="longfloat")
-        qb = Ktn.read_single_col("qb_"+self.ktn_id.strip("_")+".dat",self.n_nodes,fmt="longfloat")
+        if not exists("qf"+self.ktn_id+".dat") or not exists("qb"+self.ktn_id+".dat"): raise RuntimeError
+        qf = Ktn.read_single_col("qf"+self.ktn_id+".dat",self.n_nodes,fmt="longfloat")
+        qb = Ktn.read_single_col("qb"+self.ktn_id+".dat",self.n_nodes,fmt="longfloat")
         self.update_all_tpt_vals(qf,qb)
 
     ''' write the network to files in a format readable by Gephi '''
@@ -443,7 +443,8 @@ class Ktn(object):
     def read_double_col(fname,n_lines,fmt="int"):
         fmtfunc = int
         if fmt=="float": fmtfunc = float
-        if not exists(fname): return [None]*n_lines
+        elif fmt=="longfloat": fmtfunc = np.float128
+        if not exists(fname): return [[None,None]]*n_lines
         data = [None]*n_lines
         with open(fname) as datafile:
             for i in xrange(n_lines):
@@ -451,13 +452,14 @@ class Ktn(object):
                 data[i] = [fmtfunc(line[0]),fmtfunc(line[1])]
         return data
 
+    ''' read endpoint sets of nodes (A and B) from files nodes.A.<ktn_id> and nodes.B.<ktn_id> (or nodes.A/nodes.B if no ktn_id was specified)'''
     @staticmethod
     def read_endpoints(ktn_id,endset_name="A"):
-        if ktn_id!="": endset_fname = "min."+endset_name+"."+ktn_id.strip("_")
-        else: endset_fname = "min."+endset_name
+        if ktn_id!="": endset_fname = "nodes."+endset_name+"."+ktn_id.strip("_")
+        else: endset_fname = "nodes."+endset_name
         if not exists(endset_fname): raise RuntimeError
         endset_f = open(endset_fname,"r")
-        endset = [int(line) for line in endset_f.readlines()[1:]]
+        endset = [int(line) for line in endset_f.readlines()]
         endset_f.close()
         return endset
 
@@ -498,6 +500,12 @@ class Ktn(object):
         ''' update committor function values in Node data structures, and set other TPT values in the Node's and
             Edge's of the Ktn data structure (eg reactive fluxes etc) '''
     def update_all_tpt_vals(self,qf,qb):
+        for node in self.B: # for initial nodes, forward committor = 0. and backward committor = 1.
+            assert(abs(qf[node.node_id-1])<1.E-10)
+            assert(abs(qb[node.node_id-1]-1.)<1.E-10)
+        for node in self.A: # for absorbing nodes, forward committor = 1. and backward committor = 0.
+            assert(abs(qf[node.node_id-1]-1.)<1.E-10)
+            assert(abs(qb[node.node_id-1])<1.E-10)
         for node in self.nodelist:
             node.tpt_vals = [qf[node.node_id-1], qb[node.node_id-1]]
         for edge in self.edgelist:

@@ -5,6 +5,7 @@ Daniel J. Sharpe
 Sep 2019
 '''
 
+from __future__ import print_function
 from ktn_structures import Node, Edge, Ktn, Coarse_ktn
 import numpy as np
 from copy import copy
@@ -101,7 +102,7 @@ class Analyse_ktn(object):
         cmax = float("-inf")
         for node in ktn.nodelist:
             if np.exp(node.k_esc) > cmax: cmax = np.exp(node.k_esc)
-        print "calculating linearised transition probability matrix, effective lag time:", c/cmax
+        print("calculating linearised transition probability matrix, effective lag time:",c/cmax)
         for node in ktn.nodelist: node.t = (-1.*(c/cmax)*np.exp(node.k_esc))+(1.*d)
         for edge in ktn.edgelist: edge.t = (c/cmax)*np.exp(edge.k)
 
@@ -174,7 +175,7 @@ class Analyse_ktn(object):
     @staticmethod
     def calc_committors_linopt(ktn,direction="f",seed=21):
         if not (isinstance(ktn,Ktn) or isinstance(ktn,Coarse_ktn)): raise AttributeError
-        print "calculating committor functions by constrained linear optimisation..."
+        print("calculating committor functions by constrained linear optimisation...")
         np.random.seed(seed)
         if direction=="f": # calculate forward committor function (A<-B)
             start_set, final_set = ktn.B, ktn.A
@@ -252,10 +253,10 @@ class Analyse_ktn(object):
         # print inter-community transition rates
         for node in coarse_ktn.nodelist:
             if node.node_id==41: quit()
-            print "comm: ", node.node_id-1
+            print("comm: ", node.node_id-1)
             for edge in node.edgelist_out:
                 if edge.k is None: continue
-                print "    TO comm: ", edge.to_node.node_id-1, " ln k: ", edge.k
+                print("    TO comm: ", edge.to_node.node_id-1, " ln k: ", edge.k)
         quit()
 
         np.random.seed(seed)
@@ -314,7 +315,7 @@ class Analyse_ktn(object):
                 K_C[node.node_id-1,node.node_id-1] = -np.sum(K_C[node.node_id-1,:])
             K_C_eigs, K_C_evecs = Analyse_ktn.calc_eig_all(K_C)
             if lambda2_prev < K_C_eigs[1]: # second dominant eigenvalue of rate matrix has increased, accept move
-                print "accepting step %i: %f -> %f" % (niter+1,lambda2_prev,K_C_eigs[1])
+                print("accepting step %i: %f -> %f" % (niter+1,lambda2_prev,K_C_eigs[1]))
                 lambda2_prev = K_C_eigs[1]
                 # update the escape rates and transition rates in the Coarse_ktn data structure
                 # NB also need to add/subtract the new edges to the inter-community transition rate in the data structure!
@@ -338,10 +339,10 @@ class Analyse_ktn(object):
             niter += 1
         # update the stationary probability vector of communities in the Ktn object
         # quack
-        print "finished variational optimisation of communities, writing new communities to file..."
+        print("finished variational optimisation of communities, writing new communities to file...")
         with open("communities_new.dat","w") as newcomms_f:
             for node in coarse_ktn.nodelist:
-                print "ID: ", node.node_id
+                print("ID: ", node.node_id)
                 newcomms_f.write("%i\n" % node.comm_id)
         return K_C
 
@@ -355,7 +356,7 @@ class Analyse_ktn(object):
         alpha_vals = [0.+(incmt*float(i)) for i in range(1,ncuts+1)]
         cut_edges_all = [[] for i in range(ncuts)]
         for i, alpha_val in enumerate(alpha_vals):
-            cut_edges = Analyse_ktn.get_isocommittor_cut(ktn,alpha_val,dircn=dircn)
+            cut_edges = Analyse_ktn.get_isocommittor_cut(ktn,alpha_val,dircn=dircn)[1]
             cut_edges_all[i] = cut_edges
             if not writedata: continue
             if exists("cut_flux.alpha"+str(alpha_val)+".dat"): raise RuntimeError
@@ -364,10 +365,10 @@ class Analyse_ktn(object):
                 for j, cut_edge in enumerate(cut_edges_all[i]):
                     cut_flux_f.write("%i    %1.12f    %1.12f\n" % (j,cut_edge[1],cut_edge[2]))
 
-    ''' retrieve the set of edges that form the isocommittor cut defined by a committor function value equal to alpha.
-        alpha=0.5 defines the transition state ensemble (TSE) '''
+    ''' calculate the total A<-B reactive flux and retrieve the set of edges that form the isocommittor cut defined by
+        a committor function value equal to alpha. alpha=0.5 defines the transition state ensemble (TSE) '''
     @staticmethod
-    def get_isocommittor_cut(ktn,alpha,dircn="f"):
+    def get_isocommittor_cut(ktn,alpha,cumvals=True,dircn="f"):
         if not isinstance(ktn,Ktn) and not isistance(ktn,Coarse_ktn): raise RuntimeError
         if alpha<=0. or alpha>=1.: raise RuntimeError
         if not ktn.tpt_calc_done: raise AttributeError # need committor functions and other TPT values for this analysis
@@ -376,10 +377,10 @@ class Analyse_ktn(object):
         for edge in ktn.edgelist:
             if edge.deadts: continue
             edge_in_cut = None
-            if dircn=="f" and edge.to_node.qf>alpha and edge.from_node.qf<alpha:
+            if dircn=="f" and edge.to_node.qf>alpha and edge.from_node.qf<alpha: # forwards (A<-B)
                 edge_in_cut = edge
                 comm_diff = edge_in_cut.to_node.qf-edge_in_cut.from_node.qf # difference in committors across edge of cut
-            elif dircn=="b" and edge.from_node.qb>alpha and edge.to_node.qb<alpha:
+            elif dircn=="b" and edge.from_node.qb>alpha and edge.to_node.qb<alpha: # backwards (B<-A)
                 edge_in_cut = edge.rev_edge
                 comm_diff = edge_in_cut.to_node.qb-edge_in_cut.from_node.qb
             if edge_in_cut is None: continue
@@ -388,10 +389,36 @@ class Analyse_ktn(object):
             J += J_ij
         for cut_edge in cut_edges: cut_edge[2] *= 1./J
         cut_edges = sorted(cut_edges,key=lambda x: x[2],reverse=True)
-        for i in range(1,len(cut_edges)):
-            cut_edges[i][1] += cut_edges[i-1][1]
-            cut_edges[i][2] += cut_edges[i-1][2]
-        return cut_edges
+        if cumvals: # calculate cumulative values for reactive fluxes along edges
+            for i in range(1,len(cut_edges)):
+                cut_edges[i][1] += cut_edges[i-1][1]
+                cut_edges[i][2] += cut_edges[i-1][2]
+        return J, cut_edges
+
+    ''' write the edge costs required for a shortest paths algorithm based on the reactive flux along individual edges,
+        in the same format as the edge_weights.dat input file, to the file flux_weights.dat.
+        The actual edge costs to be used (eg in DISCOTRESS) are -\ln[val], where val is the value written to the file.
+        In this sense, val is a global quantity analogous to the transition probs T_{ij} when using "local" edge costs
+        -\ln T_{ij} in a shortest paths algorithm.
+        Note that edges are unidirectional in the reactive flux representation; zero values correspond to inf edge cost '''
+    @staticmethod
+    def write_flux_edgecosts(ktn):
+        nodeinB = [False]*ktn.n_nodes
+        norm_factors = [0.]*ktn.n_nodes # for edges from a node not in B, the edge costs incl a factor due to the tot reactive flux assocd with the from node
+        for node in ktn.B:
+            nodeinB[node.node_id-1] = True;
+            norm_factors[node.node_id-1]=1.
+        for node in ktn.A: # flux along edges from nodes in A is always zero, choose arbitrary nonzero number to avoid divide by zero
+            norm_factors[node.node_id-1]=1.
+        for edge in ktn.edgelist:
+            if nodeinB[edge.from_node.node_id-1]: continue
+            norm_factors[edge.from_node.node_id-1] += edge.fe
+        foo = open("flux_weights.dat","w")
+        for i in range(ktn.n_edges):
+            c1 = ktn.edgelist[2*i].fe/norm_factors[ktn.edgelist[2*i].from_node.node_id-1] # edge cost for forward edge
+            c2 = ktn.edgelist[(2*i)+1].fe/norm_factors[ktn.edgelist[(2*i)+1].from_node.node_id-1] # edge cost for reverse edge
+            foo.write("%s      %s\n" % ("{:.32e}".format(c1),"{:.32e}".format(c2)))
+        foo.close()
 
     ''' calculate the Kullback-Liebler divergence between two transition networks. This relative entropy measure
         quantifies the difference in transition probability distributions between two transition probability matrices.
@@ -424,35 +451,35 @@ class Analyse_ktn(object):
         if ktn1.n_nodes != ktn2.n_nodes: raise AttributeError
         ktn_comb = ktn1+ktn2
         for i in range(ktn1.n_nodes):
-            print i, ktn_comb.nodelist[i].t, ktn1.nodelist[i].t, ktn2.nodelist[i].t
+            print(i, ktn_comb.nodelist[i].t, ktn1.nodelist[i].t, ktn2.nodelist[i].t)
             assert ktn_comb.nodelist[i].t==(ktn1.nodelist[i].t+ktn2.nodelist[i].t)/2.
             assert ktn_comb.nodelist[i].pi==np.log((np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi))/2.)
             for j in range(len(ktn1.nodelist[i].edgelist_out)):
-                print ">>>>>", ktn_comb.nodelist[i].edgelist_out[j].t, ktn1.nodelist[i].edgelist_out[j].t, ktn2.nodelist[i].edgelist_out[j].t
+                print(">>>>>", ktn_comb.nodelist[i].edgelist_out[j].t, ktn1.nodelist[i].edgelist_out[j].t, ktn2.nodelist[i].edgelist_out[j].t)
                 assert ktn_comb.nodelist[i].edgelist_out[j].t==(ktn1.nodelist[i].edgelist_out[j].t+ktn2.nodelist[i].edgelist_out[j].t)/2.
         H_i_vals_1 = [Analyse_ktn.calc_entropy_rate_node(node) for node in ktn1.nodelist]
         H_i_vals_2 = [Analyse_ktn.calc_entropy_rate_node(node) for node in ktn2.nodelist]
         H_i_vals_comb = [Analyse_ktn.calc_entropy_rate_node(node) for node in ktn_comb.nodelist]
-        print "populations:"
-        print [np.exp(ktn1.nodelist[i].pi) for i in range(ktn1.n_nodes)]
-        print [np.exp(ktn2.nodelist[i].pi) for i in range(ktn2.n_nodes)]
-        print "MSM entropy rates:"
-        print H_i_vals_1
-        print H_i_vals_2
-        print H_i_vals_comb
+        print("populations:")
+        print([np.exp(ktn1.nodelist[i].pi) for i in range(ktn1.n_nodes)])
+        print([np.exp(ktn2.nodelist[i].pi) for i in range(ktn2.n_nodes)])
+        print("MSM entropy rates:")
+        print(H_i_vals_1)
+        print(H_i_vals_2)
+        print(H_i_vals_comb)
         # calculate surprisal values
-        print H_i_vals_comb[2]
-        print (np.exp(ktn1.nodelist[2].pi-np.log(np.exp(ktn1.nodelist[2].pi)+np.exp(ktn2.nodelist[2].pi)))*H_i_vals_1[2])
-        print (np.exp(ktn2.nodelist[2].pi-np.log(np.exp(ktn1.nodelist[2].pi)+np.exp(ktn2.nodelist[2].pi)))*H_i_vals_1[2])
+        print(H_i_vals_comb[2])
+        print((np.exp(ktn1.nodelist[2].pi-np.log(np.exp(ktn1.nodelist[2].pi)+np.exp(ktn2.nodelist[2].pi)))*H_i_vals_1[2]))
+        print((np.exp(ktn2.nodelist[2].pi-np.log(np.exp(ktn1.nodelist[2].pi)+np.exp(ktn2.nodelist[2].pi)))*H_i_vals_1[2]))
         s_i_vals = [H_i_vals_comb[i]-\
                     (np.exp(ktn1.nodelist[i].pi-np.log(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi)))*H_i_vals_1[i])-\
                     (np.exp(ktn2.nodelist[i].pi-np.log(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi)))*H_i_vals_2[i])\
                     for i in range(ktn1.n_nodes)]
-        print "surprisal values:"
-        print s_i_vals
+        print("surprisal values:")
+        print(s_i_vals)
         pi_comb_vals = [(np.exp(ktn1.nodelist[i].pi)+np.exp(ktn2.nodelist[i].pi))/2. for i in range(ktn1.n_nodes)]
-        print "avg. populations:"
-        print pi_comb_vals
+        print("avg. populations:")
+        print(pi_comb_vals)
         djs_approx_vals = [pi_comb_vals[i]*s_i_vals[i] for i in range(ktn1.n_nodes)]
         # update Node's of ktn1 object with surprisal values
         for i, node in enumerate(ktn1.nodelist): node.s = s_i_vals[i]

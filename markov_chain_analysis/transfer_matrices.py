@@ -4,6 +4,7 @@ Algorithm of Manhart & Morozov (Phys Rev Lett 2013, J Chem Phys 2015, PNAS 2015)
 Daniel J. Sharpe
 '''
 
+from __future__ import print_function
 from ktn_structures import Node, Edge, Ktn, Coarse_ktn
 from ktn_analysis_methods import Analyse_ktn
 import numpy as np
@@ -34,7 +35,7 @@ class List_CSR(object):
 
 ''' set up the initial transfer matrices,and transfer vectors needed by the algorithm of Manhart & Morozov '''
 def setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Qh_mtxs,Theta_mtxs,debug):
-    print ">>>>> setting up transfer matrices..."
+    print(">>>>> setting up transfer matrices...")
     K_list = List_CSR(ktn.n_nodes*(nmax+1),ktn.n_nodes*(nmax+1)) # transfer matrix for dynamical activity
     G_list = List_CSR(ktn.n_nodes*(nmax+1),ktn.n_nodes*(nmax+1)) # transfer matrix for path action
     H_list = List_CSR(ktn.n_nodes*(nmax+1),ktn.n_nodes*(nmax+1)) # transfer matrix for path entropy
@@ -49,9 +50,9 @@ def setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Qh_mtxs,Theta_mtxs,debug):
     QTheta_mtxs = [Q.dot(Theta_mtxs[i]) for i in range(nmax+1)]
     # debugging
     if debug:
-        print "\nQTheta_mtxs:\n", QTheta_mtxs
+        print("\nQTheta_mtxs:\n", QTheta_mtxs)
         for i in range(nmax+1):
-            print "\nQTheta", i, "\n", QTheta_mtxs[i].toarray()
+            print("\nQTheta", i, "\n", QTheta_mtxs[i].toarray())
     for i in range(nmax+1): # block rows
         for j in range(i+1): # block columns, matrices being built are lower triangular
             K_block_coo = QTheta_mtxs[i-j].tocoo()
@@ -77,8 +78,8 @@ def setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Qh_mtxs,Theta_mtxs,debug):
     F = F_list.return_csr_mtx()
     # more debugging
     if debug:
-        print "\ntransfer matrix for time moments, K:\n", K
-        print "number of non-zero elems of K:", K.nnz
+        print("\ntransfer matrix for time moments, K:\n", K)
+        print("number of non-zero elems of K:", K.nnz)
     return K, G, H, F, tau
 
 ''' get the jump matrix (transition probability matrix when the elements are branching probabilities) in
@@ -128,7 +129,7 @@ def get_holding_time_mtxs(ktn,nmax):
     nmax is the number of moments of dsitributions of path statistics to calculate (default mean and standard deviation only)
     eps is a cutoff defining the convergence criteria '''
 def manhart_morozov(ktn,nmax=2,eps=1.E-08,debug=False):
-    print "\n>>>>> performing the algorithm of Manhart & Morozov to calculate the moments for distributions of path statistics\n"
+    print("\n>>>>> performing the algorithm of Manhart & Morozov to calculate the moments for distributions of path statistics\n")
     if not (isinstance(ktn,Ktn) or isinstance(ktn,Coarse_ktn)): raise AttributeError
     if len(ktn.B)!= 1: raise AttributeError # only allow a single source node
     Analyse_ktn.calc_tbranch(ktn) # get the transition matrix as the matrix of branching probabilities (jump matrix)
@@ -137,13 +138,13 @@ def manhart_morozov(ktn,nmax=2,eps=1.E-08,debug=False):
     K, G, H, F, tau = setup_transfer_mtxs(ktn,nmax,Q,Qs_mtxs,Qh_mtxs,Theta_mtxs,debug)
     # debugging - print all matrices
     if debug:
-        print "\ninitial tau:\n", tau
-        print "\njump matrix:\n", Q.toarray()
+        print("\ninitial tau:\n", tau)
+        print("\njump matrix:\n", Q.toarray())
         for i in range(nmax+1):
-            print "\nholding time Theta matrix #", i
-            print Theta_mtxs[i].toarray()
-        print "\ntransfer matrix K:\n", K.toarray()
-        print "\nfinal sum matrix F:\n", F.toarray()
+            print("\nholding time Theta matrix #", i)
+            print(Theta_mtxs[i].toarray())
+        print("\ntransfer matrix K:\n", K.toarray())
+        print("\nfinal sum matrix F:\n", F.toarray())
     # all initial transfer vectors have the same form
     eta = copy(tau) # transfer vector for path action
     sigma = copy(tau) # transfer vector for path entropy
@@ -201,7 +202,7 @@ def manhart_morozov(ktn,nmax=2,eps=1.E-08,debug=False):
         path_moments_h_cum_f.write("\n")
         # check convergence
         if 1.-t_L[0]<eps and t_l[nmax]>0. and t_l[nmax]/t_L[nmax]<eps:
-            print ">>>>> path moments calculation converged after %i iterations" % l
+            print(">>>>> path moments calculation converged after %i iterations" % l)
             break
     path_moments_ts_f.close()
     path_moments_ts_cum_f.close()
