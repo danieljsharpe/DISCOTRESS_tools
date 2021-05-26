@@ -45,7 +45,7 @@ if __name__=="__main__":
     ### print KTN info ###
     print("\n\n")
     for node in full_network.nodelist:
-        print("i:",node.node_id,"pi:",np.exp(node.pi),"q:",node.qf)
+        print("i:",node.node_id,"pi:","{:.6e}".format(np.exp(node.pi)),"    q:","{:.6e}".format(node.qf))
     print("\n\n")
     for edge in full_network.edgelist:
         print("from:    ",edge.from_node.node_id,"to    :",edge.to_node.node_id, \

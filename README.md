@@ -13,3 +13,5 @@ This repository contains various code to analyse the output of the [DISCOTRESS](
 ## Miscellaneous scripts
 
 - *ctmc_to_dtmc.py* converts the DISCOTRESS input files for a continuous-time Markov chain to a corresponding discrete-time Markov chain.
+
+- *gth.py* a plain Python implementation of the Grassmann-Taksar-Heyman algorithm to compute the stationary distribution of a Markov chain.

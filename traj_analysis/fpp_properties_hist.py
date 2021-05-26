@@ -54,7 +54,7 @@ class Analyse_fpp_properties(object):
         plt.bar(bins,hist_arr,self.binw,color=color,edgecolor=color)
         if self.logvals:
             plt.xlabel("$\log_{10}("+fpd_name+")$",fontsize=42)
-            plt.ylabel("$p ( \log_{10} ("+fpd_name+")$",fontsize=42)
+            plt.ylabel("$p ( \log_{10} ("+fpd_name+") )$",fontsize=42)
         else:
             plt.xlabel("$"+fpd_name+"$",fontsize=42)
             plt.ylabel("$p("+fpd_name+")$",fontsize=42)
@@ -106,7 +106,7 @@ if __name__=="__main__":
 
     # statistic to analyse
     # 1=time, 2=dynamical activity (path length), 3=-ln(path prob) [path action], 4=entropy flow
-    stat=3
+    stat=1
 
     # binning params
 
@@ -144,4 +144,4 @@ if __name__=="__main__":
     elif stat==3: fpd_name = "- \ln \mathcal{P}"
     elif stat==4: fpd_name = "\mathcal{S} / k_\mathrm{B}"
     else: quit("error in choice of stat")
-    calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="pdf",xtick_dp=1,ytick_dp=2,linevals=linevals)
+#    calc_hist_obj.plot_hist(hist_arr,nxticks,nyticks,ymax,fpd_name,figfmt="pdf",xtick_dp=1,ytick_dp=2,linevals=linevals)
